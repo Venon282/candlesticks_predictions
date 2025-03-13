@@ -1,0 +1,3 @@
+[submodule "py_libraries"]
+	path = py_libraries
+	url = https://github.com/Venon282/py_libraries.git

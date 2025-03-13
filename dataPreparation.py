@@ -5,6 +5,10 @@ import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import sklearn
 import numpy as np
+import joblib
+
+# internal
+from py_libraries.ml.preprocessing import MinMaxGlobalScaler
 
 def dfsDict(path, sep=',', encoding='utf-8-sig'):
     return {file_path.stem: pd.read_csv(file_path, sep=sep, encoding=encoding) for file_path in Path(path).glob('*.csv')}
@@ -56,6 +60,30 @@ def splitDict(datas_dict, train=0.7, val=0.15, test=0.15, seed=42):
                            'outputs':{'train':outputs_train, 'val':outputs_val, 'test':outputs_test}}
     return split_dict
 
+def scale(split_dict, path):
+    path = Path(path)
+    inputs_train, inputs_val, inputs_test = [], [], []
+    outputs_train, outputs_val, outputs_test = [], [], []
+    for key, values in split_dict.items():
+        market = key.split('_')[0].lower()
+        scaler_path = path / f'{market}.pkl'
+        if not scaler_path.is_file():
+            scaler = MinMaxGlobalScaler()
+            scaler.fit([values['inputs']['train'], values['outputs']['train']])
+            joblib.dump(scaler, scaler_path)
+        else:
+            scaler = joblib.load(scaler_path)
+
+        inputs_train.extend(scaler.transform(values['inputs']['train']))
+        outputs_train.extend(scaler.transform(values['outputs']['train']))
+
+        inputs_val.extend(scaler.transform(values['inputs']['val']))
+        outputs_val.extend(scaler.transform(values['outputs']['val']))
+
+        inputs_test.extend(scaler.transform(values['inputs']['test']))
+        outputs_test.extend(scaler.transform(values['outputs']['test']))
+    return inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test
+
 def main():
     dfs_dict = dfsDict('./datas/raw', sep=';')
     improveDataSets(dfs_dict)
@@ -75,8 +103,14 @@ def main():
             for k, v in val.items():
                 print(key, ke, k, np.array(v).shape)
 
-    # todo scale based on the global scaler
+    inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test = scale(split_dict, path='./datas/scaler')
+    inputs_train, outputs_train = sklearn.utils.shuffle(inputs_train, outputs_train)
+    inputs_val, outputs_val = sklearn.utils.shuffle(inputs_val, outputs_val)
+    inputs_test, outputs_test = sklearn.utils.shuffle(inputs_test, outputs_test)
 
+    datas_dict = {'inputs_train':inputs_train, 'inputs_val':inputs_val, 'inputs_test':inputs_test, 'outputs_train':outputs_train, 'outputs_val':outputs_val, 'outputs_test':outputs_test}
+    for key, values in datas_dict.items():
+        print(key, np.array(values).shape, np.min(values), np.max(values))
 
 if __name__ == '__main__':
     start_time = time.time()
