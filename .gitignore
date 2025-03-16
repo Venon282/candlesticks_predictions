@@ -1,3 +1,5 @@
 *.pkl
+*.keras
 __pycache__/
 datas/
+saved_model/
