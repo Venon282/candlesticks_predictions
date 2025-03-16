@@ -461,7 +461,13 @@ if __name__ == '__main__':
     learning_rate = CustomSchedule(d_model)
     optimizer = tf.keras.optimizers.Adam(learning_rate,
                                         beta_1=0.9, beta_2=0.98, epsilon=1e-9)
-    transformer.compile(optimizer=optimizer, loss='mse')
+    transformer.compile(optimizer=optimizer, loss='mse',
+                        metrics=[
+                            'mse',
+                            tf.keras.metrics.MeanAbsoluteError(name='mae'),
+                            tf.keras.metrics.RootMeanSquaredError(name='rmse'),
+                            DirectionalAccuracy(name='directional_accuracy')
+                        ])
 
     # Build the model by running a dummy input through it
     dummy_encoder = tf.random.uniform((1, input_seq_len, num_features))
