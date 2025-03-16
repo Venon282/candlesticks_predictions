@@ -313,30 +313,55 @@ class TransformerForecaster(tf.keras.Model):
 # ----------------------------
 # Inference: Autoregressive Forecasting
 # ----------------------------
+@tf.function
 def autoregressive_forecast(model, encoder_input, start_token, target_seq_len):
     """
-    Generates predictions one time step at a time in an autoregressive fashion.
+    Generates predictions in an autoregressive manner using a compiled loop.
 
     Args:
       model: The trained TransformerForecaster.
-      encoder_input: Past candlesticks of shape (batch, input_seq_len, num_features).
+      encoder_input: Past candlestick data of shape (batch, input_seq_len, num_features).
       start_token: A tensor of shape (num_features,) used as the initial decoder input.
-      target_seq_len: Number of future candlesticks to predict.
+      target_seq_len: The number of future steps to predict.
 
     Returns:
       A tensor of shape (batch, target_seq_len, num_features) representing the forecast.
     """
     batch_size = tf.shape(encoder_input)[0]
-    # Start with a decoder input containing only the start token.
+    # Create the initial decoder input by repeating the start token for each batch sample.
     decoder_input = tf.tile(tf.expand_dims(start_token, 0), [batch_size, 1, 1])
-    outputs = []
-    for _ in range(target_seq_len):
+    
+    # Initialize a TensorArray to collect predictions for each time step.
+    predictions_array = tf.TensorArray(dtype=tf.float32, size=target_seq_len)
+
+    # Define the loop condition: iterate until i == target_seq_len.
+    def condition(i, decoder_input, predictions_array):
+        return i < target_seq_len
+
+    # Define the loop body: predict the next token and update the decoder input.
+    def loop_body(i, decoder_input, predictions_array):
+        # Generate predictions using the current decoder input.
         predictions = model((encoder_input, decoder_input), training=False)
-        next_token = predictions[:, -1:, :]  # Get the most recent prediction
-        outputs.append(next_token)
+        # Extract the last token prediction (shape: (batch, 1, num_features)).
+        next_token = predictions[:, -1:, :]
+        # Write the next token (squeezed to remove the time dimension) into the TensorArray.
+        predictions_array = predictions_array.write(i, tf.squeeze(next_token, axis=1))
+        # Append the next token to the decoder input.
         decoder_input = tf.concat([decoder_input, next_token], axis=1)
-    # Concatenate predicted tokens (excluding the initial start token if needed)
-    return tf.concat(outputs, axis=1)
+        return i + 1, decoder_input, predictions_array
+
+    # Execute the while loop.
+    i, decoder_input, predictions_array = tf.while_loop(
+        condition,
+        loop_body,
+        loop_vars=[tf.constant(0), decoder_input, predictions_array]
+    )
+    
+    # Stack the TensorArray and transpose to get shape: (batch, target_seq_len, num_features)
+    predictions_stacked = predictions_array.stack()
+    predictions_stacked = tf.transpose(predictions_stacked, perm=[1, 0, 2])
+    
+    return predictions_stacked
 
 # Example usage for inference:
 # start_token = tf.zeros((num_features,))  # Alternatively, use a learned start token.
