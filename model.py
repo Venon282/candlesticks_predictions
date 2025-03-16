@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, LayerNormalization, Dropout, MultiHeadAttention
 from tensorflow.keras.models import Model
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import numpy as np
 import os
 from tensorflow import keras
@@ -363,6 +364,35 @@ def autoregressive_forecast(model, encoder_input, start_token, target_seq_len):
     
     return predictions_stacked
 
+def callbacks():
+    # Stop training if the validation loss doesn't improve for 10 epochs
+    early_stopping = EarlyStopping(
+        monitor='val_loss', 
+        patience=10, 
+        restore_best_weights=True,
+        verbose=1
+    )
+
+    # Save the model weights when the validation loss improves
+    model_checkpoint = ModelCheckpoint(
+        filepath='saved_model/transformer_best.keras',
+        monitor='val_loss',
+        save_best_only=True,
+        save_weights_only=False,
+        verbose=1
+    )
+
+    # Reduce the learning rate if the validation loss plateaus
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=5,
+        min_lr=1e-8,
+        verbose=1
+    )
+
+    return [early_stopping, model_checkpoint, reduce_lr]
+
 # Example usage for inference:
 # start_token = tf.zeros((num_features,))  # Alternatively, use a learned start token.
 # predicted_sequence = autoregressive_forecast(transformer, inputs_test, start_token, target_seq_len)
@@ -437,6 +467,7 @@ if __name__ == '__main__':
         validation_data=((inputs_val, decoder_input_val), outputs_val),
         epochs=50,
         batch_size=64,
+        callbacks=callbacks(),
         verbose=2
     )
 
