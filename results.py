@@ -121,7 +121,7 @@ def plot_example(example_idx, inputs_test, outputs_test, predictions, save_dir='
 
 def main():
     # Load the saved model from the specified folder
-    model_path = 'saved_model/transformer_forecaster.keras'
+    model_path = 'saved_model/transformer_best.keras'
     model = tf.keras.models.load_model(model_path, custom_objects=custom_objects) #, custom_objects=custom_objects
     print("Model loaded from:", model_path)
 

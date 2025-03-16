@@ -342,7 +342,7 @@ class DirectionalAccuracy(tf.keras.metrics.Metric):
 
 @tf.keras.utils.register_keras_serializable()
 class CustomCandleLoss(tf.keras.losses.Loss):
-    def __init__(self, penalty_direction_weight=2.0, name="custom_candle_loss", **kwargs):
+    def __init__(self, penalty_direction_weight=2.0, penalty_size_weight=1.0, penalty_body_weight=1.0, name="custom_candle_loss", **kwargs):
         """
         Initializes the custom candle loss.
 
@@ -353,6 +353,8 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         """
         super(CustomCandleLoss, self).__init__(name=name, **kwargs)
         self.penalty_direction_weight = penalty_direction_weight
+        self.penalty_size_weight = penalty_size_weight
+        self.penalty_body_weight = penalty_body_weight
 
     def call(self, y_true, y_pred):
         """
@@ -521,12 +523,12 @@ if __name__ == '__main__':
     import tensorflow as tf
     import joblib
 
-    inputs_train = joblib.load(f'./datas/split/inputs_train.pkl')
-    inputs_val = joblib.load(f'./datas/split/inputs_val.pkl')
-    inputs_test = joblib.load(f'./datas/split/inputs_test.pkl')
-    outputs_train = joblib.load(f'./datas/split/outputs_train.pkl')
-    outputs_val = joblib.load(f'./datas/split/outputs_val.pkl')
-    outputs_test = joblib.load(f'./datas/split/outputs_test.pkl')
+    inputs_train    = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_train.pkl')
+    inputs_val      = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_val.pkl')
+    inputs_test     = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_test.pkl')
+    outputs_train   = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_train.pkl')
+    outputs_val     = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_val.pkl')
+    outputs_test    = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_test.pkl')
 
 
     # ----------------------------
@@ -540,7 +542,7 @@ if __name__ == '__main__':
 
     input_seq_len   = 30   # Number of past candlesticks
     target_seq_len  = 5    # Number of future candlesticks to predict
-    num_features    = 5    # Candlestick features: open, high, low, close, volume
+    num_features    = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
 
     # ----------------------------
     # Instantiate & Compile the Model
@@ -553,7 +555,7 @@ if __name__ == '__main__':
     learning_rate = CustomSchedule(d_model)
     optimizer = tf.keras.optimizers.Adam(learning_rate,
                                         beta_1=0.9, beta_2=0.98, epsilon=1e-9)
-    transformer.compile(optimizer=optimizer, loss='mse',
+    transformer.compile(optimizer=optimizer, loss=CustomCandleLoss(penalty_direction_weight=2.0),
                         metrics=[
                             'mse',
                             tf.keras.metrics.MeanAbsoluteError(name='mae'),
@@ -568,7 +570,7 @@ if __name__ == '__main__':
     transformer.summary()
 
     # Define the number of features (here 5: open, high, low, close, volume)
-    num_features = outputs_train.shape[-1]
+    # num_features = outputs_train.shape[-1]
 
     # Creating a start token for the decoder
     start_token = tf.zeros((num_features,), dtype=tf.float32)

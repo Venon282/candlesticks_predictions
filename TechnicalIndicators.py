@@ -55,7 +55,7 @@ class TechnicalIndicators:
         lower_band = sma - std * rstd
         return sma, upper_band, lower_band
 
-    def add_indicators(self, df):
+    def add_indicators(self, df, inplace=False):
         """
         Computes and appends the selected technical indicators to the DataFrame.
         The DataFrame is assumed to have at least the following columns:
@@ -63,7 +63,7 @@ class TechnicalIndicators:
         Returns:
           A new DataFrame with additional columns for each computed indicator.
         """
-        df_result = df.copy()
+        df_result = df if inplace else df.copy()
         
         # Add RSI computed on the close price.
         if 'rsi' in self.indicators:
