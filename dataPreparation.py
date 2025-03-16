@@ -67,21 +67,43 @@ def scale(split_dict, path):
     for key, values in split_dict.items():
         market = key.split('_')[0].lower()
         scaler_path = path / f'{market}.pkl'
+        scaler_vol_path = path / f'{market}_vol.pkl'
         if not scaler_path.is_file():
             scaler = MinMaxGlobalScaler()
-            scaler.fit([values['inputs']['train'], values['outputs']['train']])
+            scaler_vol = MinMaxGlobalScaler()
+            inputs_train_array = np.array(values['inputs']['train'])
+            outputs_train_array = np.array(values['outputs']['train'])
+
+            scaler.fit([
+                inputs_train_array[:, :, :4],  # First 4 cols
+                outputs_train_array[:, :, :4]
+            ])
+            scaler_vol.fit([
+                inputs_train_array[:, :, 4:],  # Remaining cols
+                outputs_train_array[:, :, 4:]
+            ])
             joblib.dump(scaler, scaler_path)
+            joblib.dump(scaler_vol, scaler_vol_path)
         else:
             scaler = joblib.load(scaler_path)
+            scaler_vol = joblib.load(scaler_vol_path)
 
-        inputs_train.extend(scaler.transform(values['inputs']['train']))
-        outputs_train.extend(scaler.transform(values['outputs']['train']))
+        def transform_data(input_array, scaler, scaler_vol):
+            """Apply the respective scaler to each slice and concatenate"""
+            input_array = np.array(input_array)  # Ensure conversion
+            return np.concatenate((
+                scaler.transform(input_array[:, :, :4]),
+                scaler_vol.transform(input_array[:, :, 4:])
+            ), axis=2)
 
-        inputs_val.extend(scaler.transform(values['inputs']['val']))
-        outputs_val.extend(scaler.transform(values['outputs']['val']))
+        inputs_train.extend(transform_data(values['inputs']['train'], scaler, scaler_vol))
+        outputs_train.extend(transform_data(values['outputs']['train'], scaler, scaler_vol))
 
-        inputs_test.extend(scaler.transform(values['inputs']['test']))
-        outputs_test.extend(scaler.transform(values['outputs']['test']))
+        inputs_val.extend(transform_data(values['inputs']['val'], scaler, scaler_vol))
+        outputs_val.extend(transform_data(values['outputs']['val'], scaler, scaler_vol))
+
+        inputs_test.extend(transform_data(values['inputs']['test'], scaler, scaler_vol))
+        outputs_test.extend(transform_data(values['outputs']['test'], scaler, scaler_vol))
     return inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test
 
 def main():
@@ -111,6 +133,9 @@ def main():
     datas_dict = {'inputs_train':inputs_train, 'inputs_val':inputs_val, 'inputs_test':inputs_test, 'outputs_train':outputs_train, 'outputs_val':outputs_val, 'outputs_test':outputs_test}
     for key, values in datas_dict.items():
         print(key, np.array(values).shape, np.min(values), np.max(values))
+        joblib.dump(np.array(values), Path('./datas/split') / f'{key}.pkl')
+
+
 
 if __name__ == '__main__':
     start_time = time.time()
