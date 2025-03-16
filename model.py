@@ -364,6 +364,7 @@ class CustomCandleLoss(tf.keras.losses.Loss):
           - A penalty if the predicted low is not the minimum among the four prices.
           - A penalty if the predicted candle direction (close - open) does not match the true direction,
             with a higher weight applied for open and close errors.
+          - A penalty for the difference in candle size (high - low) between the prediction and ground truth.
 
         Assumes the first four features in both y_true and y_pred correspond to [open, high, low, close].
 
@@ -402,10 +403,24 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         # Apply a higher penalty when the predicted direction is wrong
         penalty_direction = self.penalty_direction_weight * (error_open + error_close) * direction_mismatch
 
+        # --- Candle Size Penalty ---
+        # Calculate true and predicted candle sizes: high - low
+        true_size = y_true[..., 1] - y_true[..., 2]
+        pred_size = y_pred[..., 1] - y_pred[..., 2]
+        penalty_size = self.penalty_size_weight * tf.square(true_size - pred_size)
+        
+         # --- Candle Body Size Penalty ---
+        # Calculate candle body size as the absolute difference between open and close.
+        true_body_size = tf.abs(y_true[..., 3] - y_true[..., 0])
+        pred_body_size = tf.abs(y_pred[..., 3] - y_pred[..., 0])
+        penalty_body = self.penalty_body_weight * tf.square(true_body_size - pred_body_size)
+        
         # --- Combine Loss Components ---
         penalty_order = tf.reduce_mean(penalty_high + penalty_low)
         penalty_dir = tf.reduce_mean(penalty_direction)
-        total_loss = mse + penalty_order + penalty_dir
+        penalty_siz = tf.reduce_mean(penalty_size)
+        penalty_bod = tf.reduce_mean(penalty_body)
+        total_loss = mse + penalty_order + penalty_dir + penalty_siz + penalty_bod
         
         return total_loss
 
@@ -488,15 +503,15 @@ def callbacks():
     )
 
     # Reduce the learning rate if the validation loss plateaus
-    reduce_lr = ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=5,
-        min_lr=1e-8,
-        verbose=1
-    )
+    # reduce_lr = ReduceLROnPlateau(
+    #     monitor='val_loss',
+    #     factor=0.5,
+    #     patience=5,
+    #     min_lr=1e-8,
+    #     verbose=1
+    # )
 
-    return [early_stopping, model_checkpoint, reduce_lr]
+    return [early_stopping, model_checkpoint] # , reduce_lr
 
 # Example usage for inference:
 # start_token = tf.zeros((num_features,))  # Alternatively, use a learned start token.
@@ -576,7 +591,7 @@ if __name__ == '__main__':
         x=(inputs_train, decoder_input_train),  # Inputs: (encoder_input, decoder_input)
         y=outputs_train,                        # Target: sequence to predict
         validation_data=((inputs_val, decoder_input_val), outputs_val),
-        epochs=50,
+        epochs=200,
         batch_size=64,
         callbacks=callbacks(),
         verbose=2
