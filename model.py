@@ -310,6 +310,7 @@ class TransformerForecaster(tf.keras.Model):
                     config["dtype"] = tf.keras.mixed_precision.Policy(policy_name)
         return cls(**config)
 
+@tf.keras.utils.register_keras_serializable()
 class DirectionalAccuracy(tf.keras.metrics.Metric):
     def __init__(self, name='directional_accuracy', **kwargs):
         super(DirectionalAccuracy, self).__init__(name=name, **kwargs)
@@ -338,6 +339,82 @@ class DirectionalAccuracy(tf.keras.metrics.Metric):
     def reset_states(self):
         self.correct.assign(0.0)
         self.total.assign(0.0)
+
+@tf.keras.utils.register_keras_serializable()
+class CustomCandleLoss(tf.keras.losses.Loss):
+    def __init__(self, penalty_direction_weight=2.0, name="custom_candle_loss", **kwargs):
+        """
+        Initializes the custom candle loss.
+
+        Args:
+          penalty_direction_weight: Multiplier for the direction penalty applied to errors in open and close.
+          name: Name for the loss function.
+          **kwargs: Additional keyword arguments.
+        """
+        super(CustomCandleLoss, self).__init__(name=name, **kwargs)
+        self.penalty_direction_weight = penalty_direction_weight
+
+    def call(self, y_true, y_pred):
+        """
+        Computes the loss.
+
+        The loss is computed as the sum of:
+          - Baseline MSE over the candlestick features [open, high, low, close].
+          - A penalty if the predicted high is not the maximum among the four prices.
+          - A penalty if the predicted low is not the minimum among the four prices.
+          - A penalty if the predicted candle direction (close - open) does not match the true direction,
+            with a higher weight applied for open and close errors.
+
+        Assumes the first four features in both y_true and y_pred correspond to [open, high, low, close].
+
+        Args:
+          y_true: Ground truth tensor of shape (..., 4).
+          y_pred: Prediction tensor of the same shape as y_true.
+        
+        Returns:
+          A scalar tensor representing the total loss.
+        """
+        # --- Baseline MSE over open, high, low, close ---
+        mse = tf.reduce_mean(tf.square(y_true - y_pred))
+        
+        # --- Ordering Penalties ---
+        # Predicted candlestick prices (assumed order: open, high, low, close)
+        prices_pred = y_pred[..., :4]
+        max_price_pred = tf.reduce_max(prices_pred, axis=-1)  # highest value in prediction
+        min_price_pred = tf.reduce_min(prices_pred, axis=-1)  # lowest value in prediction
+        
+        # Penalize if predicted high (index 1) isn't the max or predicted low (index 2) isn't the min
+        penalty_high = tf.square(max_price_pred - y_pred[..., 1])
+        penalty_low = tf.square(y_pred[..., 2] - min_price_pred)
+        
+        # --- Directional Penalty ---
+        # Compute the true and predicted direction based on open and close prices.
+        true_direction = tf.sign(y_true[..., 3] - y_true[..., 0])
+        pred_direction = tf.sign(y_pred[..., 3] - y_pred[..., 0])
+        
+        # Create a mask that is 1.0 when the direction does not match
+        direction_mismatch = tf.cast(tf.not_equal(true_direction, pred_direction), tf.float32)
+        
+        # Compute squared errors for open and close
+        error_open = tf.square(y_true[..., 0] - y_pred[..., 0])
+        error_close = tf.square(y_true[..., 3] - y_pred[..., 3])
+        
+        # Apply a higher penalty when the predicted direction is wrong
+        penalty_direction = self.penalty_direction_weight * (error_open + error_close) * direction_mismatch
+
+        # --- Combine Loss Components ---
+        penalty_order = tf.reduce_mean(penalty_high + penalty_low)
+        penalty_dir = tf.reduce_mean(penalty_direction)
+        total_loss = mse + penalty_order + penalty_dir
+        
+        return total_loss
+
+    def get_config(self):
+        config = super(CustomCandleLoss, self).get_config()
+        config.update({
+            "penalty_direction_weight": self.penalty_direction_weight,
+        })
+        return config
         
 # ----------------------------
 # Inference: Autoregressive Forecasting
