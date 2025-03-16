@@ -310,7 +310,35 @@ class TransformerForecaster(tf.keras.Model):
                     config["dtype"] = tf.keras.mixed_precision.Policy(policy_name)
         return cls(**config)
 
-
+class DirectionalAccuracy(tf.keras.metrics.Metric):
+    def __init__(self, name='directional_accuracy', **kwargs):
+        super(DirectionalAccuracy, self).__init__(name=name, **kwargs)
+        self.total = self.add_weight(name='total', initializer='zeros', dtype=tf.float32)
+        self.correct = self.add_weight(name='correct', initializer='zeros', dtype=tf.float32)
+    
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        # Extract the close price (assuming 4th feature: index 3)
+        y_true_close = y_true[..., 3]
+        y_pred_close = y_pred[..., 3]
+        # Calculate differences between consecutive time steps along axis=1 (time axis)
+        y_true_diff = y_true_close[:, 1:] - y_true_close[:, :-1]
+        y_pred_diff = y_pred_close[:, 1:] - y_pred_close[:, :-1]
+        # Compute the sign (direction) of these differences
+        y_true_sign = tf.math.sign(y_true_diff)
+        y_pred_sign = tf.math.sign(y_pred_diff)
+        # Compare directional predictions: correct if both signs are equal
+        correct = tf.cast(tf.equal(y_true_sign, y_pred_sign), tf.float32)
+        # Update the counts
+        self.correct.assign_add(tf.reduce_sum(correct))
+        self.total.assign_add(tf.cast(tf.size(correct), tf.float32))
+    
+    def result(self):
+        return tf.math.divide_no_nan(self.correct, self.total)
+    
+    def reset_states(self):
+        self.correct.assign(0.0)
+        self.total.assign(0.0)
+        
 # ----------------------------
 # Inference: Autoregressive Forecasting
 # ----------------------------
