@@ -1,314 +1,9 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Dense, LayerNormalization, Dropout, MultiHeadAttention
-from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-import numpy as np
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import os
-from tensorflow import keras
 
-# ----------------------------
-# Positional Encoding
-# ----------------------------
-
-@tf.keras.utils.register_keras_serializable()
-class PositionalEncoding(tf.keras.layers.Layer):
-    def __init__(self, seq_len, d_model, **kwargs):
-        super(PositionalEncoding, self).__init__(**kwargs)
-        self.seq_len = seq_len
-        self.d_model = d_model
-        self.pos_encoding = self.compute_positional_encoding(seq_len, d_model)
-
-    def compute_positional_encoding(self, seq_len, d_model):
-        pos = np.arange(seq_len)[:, np.newaxis]
-        i = np.arange(d_model)[np.newaxis, :]
-        angle_rates = 1 / np.power(10000, (2 * (i // 2)) / np.float32(d_model))
-        angle_rads = pos * angle_rates
-        angle_rads[:, 0::2] = np.sin(angle_rads[:, 0::2])
-        angle_rads[:, 1::2] = np.cos(angle_rads[:, 1::2])
-        pos_encoding = angle_rads[np.newaxis, ...]
-        return tf.cast(pos_encoding, dtype=tf.float32)
-
-    def call(self, inputs):
-        return inputs + self.pos_encoding[:, :tf.shape(inputs)[1], :]
-
-    def get_config(self):
-        config = super(PositionalEncoding, self).get_config()
-        config.update({
-            "seq_len": self.seq_len,
-            "d_model": self.d_model
-        })
-        return config
-
-# ----------------------------
-# Custom Learning Rate Schedule (Noam schedule)
-# ----------------------------
-@tf.keras.utils.register_keras_serializable()
-class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self, d_model, warmup_steps=4000, **kwargs):
-        super(CustomSchedule, self).__init__(**kwargs)
-        # Store d_model as an integer for serialization
-        self.d_model = d_model
-        self.warmup_steps = warmup_steps
-
-    def __call__(self, step):
-        d_model = tf.cast(self.d_model, tf.float32)
-        step = tf.cast(step, tf.float32)
-        arg1 = tf.math.rsqrt(step)
-        arg2 = step * (self.warmup_steps ** -1.5)
-        return tf.math.rsqrt(d_model) * tf.math.minimum(arg1, arg2)
-
-    def get_config(self):
-        return {
-            "d_model": self.d_model,
-            "warmup_steps": self.warmup_steps,
-        }
-
-
-# ----------------------------
-# Encoder Layer
-# ----------------------------
-@tf.keras.utils.register_keras_serializable()
-class EncoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, dff, dropout_rate=0.1, **kwargs):
-        super(EncoderLayer, self).__init__(**kwargs)
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.dff = dff
-        self.dropout_rate = dropout_rate
-
-        self.mha = MultiHeadAttention(num_heads=num_heads, key_dim=d_model)
-        self.ffn = tf.keras.Sequential([
-            Dense(dff, activation='relu'),
-            Dense(d_model)
-        ])
-        self.layernorm1 = LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = LayerNormalization(epsilon=1e-6)
-        self.dropout1 = Dropout(dropout_rate)
-        self.dropout2 = Dropout(dropout_rate)
-
-    def call(self, x, training=False, mask=None):
-        attn_output = self.mha(x, x, x, attention_mask=mask)
-        attn_output = self.dropout1(attn_output, training=training)
-        out1 = self.layernorm1(x + attn_output)
-        ffn_output = self.ffn(out1)
-        ffn_output = self.dropout2(ffn_output, training=training)
-        return self.layernorm2(out1 + ffn_output)
-
-    def get_config(self):
-        config = super(EncoderLayer, self).get_config()
-        config.update({
-            "d_model": self.d_model,
-            "num_heads": self.num_heads,
-            "dff": self.dff,
-            "dropout_rate": self.dropout_rate
-        })
-        return config
-
-
-# ----------------------------
-# Encoder (Projects continuous inputs via Dense)
-# ----------------------------
-@tf.keras.utils.register_keras_serializable()
-class Encoder(tf.keras.layers.Layer):
-    def __init__(self, num_layers, d_model, num_heads, dff, input_seq_len, dropout_rate=0.1, **kwargs):
-        super(Encoder, self).__init__(**kwargs)
-        self.num_layers = num_layers
-        self.d_model = d_model
-        self.input_seq_len = input_seq_len
-        self.dropout_rate = dropout_rate
-
-        # Project continuous candlestick data into a d_model–dimensional space.
-        self.input_projection = Dense(d_model)
-        self.pos_encoding = PositionalEncoding(input_seq_len, d_model)
-        self.enc_layers = [EncoderLayer(d_model, num_heads, dff, dropout_rate)
-                           for _ in range(num_layers)]
-        self.dropout = Dropout(dropout_rate)
-
-    def call(self, x, training=False, mask=None):
-        x = self.input_projection(x)
-        x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
-        x = self.pos_encoding(x)
-        x = self.dropout(x, training=training)
-        for layer in self.enc_layers:
-            x = layer(x, training=training, mask=mask)
-        return x
-
-    def get_config(self):
-        config = super(Encoder, self).get_config()
-        config.update({
-            "num_layers": self.num_layers,
-            "d_model": self.d_model,
-            "input_seq_len": self.input_seq_len,
-            "dropout_rate": self.dropout_rate,
-            # Assuming all EncoderLayers share same num_heads and dff
-            "num_heads": self.enc_layers[0].num_heads if self.enc_layers else None,
-            "dff": self.enc_layers[0].ffn.layers[0].units if self.enc_layers else None,
-        })
-        return config
-
-# ----------------------------
-# Decoder Layer
-# ----------------------------
-@tf.keras.utils.register_keras_serializable()
-class DecoderLayer(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, dff, dropout_rate=0.1, **kwargs):
-        super(DecoderLayer, self).__init__(**kwargs)
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.dff = dff
-        self.dropout_rate = dropout_rate
-
-        self.mha1 = MultiHeadAttention(num_heads=num_heads, key_dim=d_model)
-        self.mha2 = MultiHeadAttention(num_heads=num_heads, key_dim=d_model)
-        self.ffn = tf.keras.Sequential([
-            Dense(dff, activation='relu'),
-            Dense(d_model)
-        ])
-        self.layernorm1 = LayerNormalization(epsilon=1e-6)
-        self.layernorm2 = LayerNormalization(epsilon=1e-6)
-        self.layernorm3 = LayerNormalization(epsilon=1e-6)
-        self.dropout1 = Dropout(dropout_rate)
-        self.dropout2 = Dropout(dropout_rate)
-        self.dropout3 = Dropout(dropout_rate)
-
-    def call(self, x, enc_output, training=False, look_ahead_mask=None, padding_mask=None):
-        # Self-attention with look-ahead mask (for autoregressive decoding)
-        attn1 = self.mha1(x, x, x, attention_mask=look_ahead_mask)
-        attn1 = self.dropout1(attn1, training=training)
-        out1 = self.layernorm1(x + attn1)
-        # Encoder-decoder attention
-        attn2 = self.mha2(out1, enc_output, enc_output, attention_mask=padding_mask)
-        attn2 = self.dropout2(attn2, training=training)
-        out2 = self.layernorm2(out1 + attn2)
-        # Feed-forward network
-        ffn_output = self.ffn(out2)
-        ffn_output = self.dropout3(ffn_output, training=training)
-        return self.layernorm3(out2 + ffn_output)
-
-    def get_config(self):
-        config = super(DecoderLayer, self).get_config()
-        config.update({
-            "d_model": self.d_model,
-            "num_heads": self.num_heads,
-            "dff": self.dff,
-            "dropout_rate": self.dropout_rate
-        })
-        return config
-
-# ----------------------------
-# Decoder (For continuous outputs)
-# ----------------------------
-@tf.keras.utils.register_keras_serializable()
-class Decoder(tf.keras.layers.Layer):
-    def __init__(self, num_layers, d_model, num_heads, dff, target_seq_len, dropout_rate=0.1, **kwargs):
-        super(Decoder, self).__init__(**kwargs)
-        self.num_layers = num_layers
-        self.d_model = d_model
-        self.target_seq_len = target_seq_len
-        self.dropout_rate = dropout_rate
-
-        # Project target candlestick features into d_model dimensions.
-        self.input_projection = Dense(d_model)
-        self.pos_encoding = PositionalEncoding(target_seq_len, d_model)
-        self.dec_layers = [DecoderLayer(d_model, num_heads, dff, dropout_rate)
-                           for _ in range(num_layers)]
-        self.dropout = Dropout(dropout_rate)
-
-    def call(self, x, enc_output, training=False, look_ahead_mask=None, padding_mask=None):
-        x = self.input_projection(x)
-        x *= tf.math.sqrt(tf.cast(self.d_model, tf.float32))
-        x = self.pos_encoding(x)
-        x = self.dropout(x, training=training)
-        for layer in self.dec_layers:
-            x = layer(x, enc_output, training=training,
-                      look_ahead_mask=look_ahead_mask, padding_mask=padding_mask)
-        return x
-
-    def get_config(self):
-        config = super(Decoder, self).get_config()
-        config.update({
-            "num_layers": self.num_layers,
-            "d_model": self.d_model,
-            "target_seq_len": self.target_seq_len,
-            "dropout_rate": self.dropout_rate,
-            "num_heads": self.dec_layers[0].num_heads if self.dec_layers else None,
-            "dff": self.dec_layers[0].ffn.layers[0].units if self.dec_layers else None,
-        })
-        return config
-
-# ----------------------------
-# Transformer Forecaster (Encoder-Decoder Model)
-# ----------------------------
-
-
-# Assuming Encoder and Decoder are defined similarly in your model
-# For example:
-# from your_module import Encoder, Decoder
-@tf.keras.utils.register_keras_serializable() #@tf.keras.utils.register_keras_serializable(package="Custom", name="TransformerForecaster")
-class TransformerForecaster(tf.keras.Model):
-    def __init__(self, num_layers, d_model, num_heads, dff,
-                 input_seq_len, target_seq_len, num_features,
-                 dropout_rate=0.1, **kwargs):
-        # Pass extra keyword arguments to the parent class
-        super(TransformerForecaster, self).__init__(**kwargs)
-
-        # Save initialization parameters for serialization
-        self.num_layers = num_layers
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.dff = dff
-        self.input_seq_len = input_seq_len
-        self.target_seq_len = target_seq_len
-        self.num_features = num_features
-        self.dropout_rate = dropout_rate
-
-        # Build the model components (Encoder and Decoder must be defined accordingly)
-        self.encoder = Encoder(num_layers, d_model, num_heads, dff, input_seq_len, dropout_rate)
-        self.decoder = Decoder(num_layers, d_model, num_heads, dff, target_seq_len, dropout_rate)
-        self.final_layer = Dense(num_features)
-
-    def call(self, inputs, training=False):
-        # Expecting inputs as a tuple: (encoder_input, decoder_input)
-        enc_input, dec_input = inputs
-        enc_output = self.encoder(enc_input, training=training)
-        # Create look-ahead mask based on decoder sequence length
-        look_ahead_mask = self.create_look_ahead_mask(tf.shape(dec_input)[1])
-        dec_output = self.decoder(dec_input, enc_output, training=training, look_ahead_mask=look_ahead_mask)
-        final_output = self.final_layer(dec_output)
-        return final_output
-
-    def create_look_ahead_mask(self, size):
-        # Create a lower triangular matrix mask for causal decoding
-        mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
-        return mask
-
-    def get_config(self):
-        # Retrieve the base configuration from the parent class
-        base_config = super(TransformerForecaster, self).get_config()
-        # Custom configuration for our parameters
-        config = {
-            "num_layers": self.num_layers,
-            "d_model": self.d_model,
-            "num_heads": self.num_heads,
-            "dff": self.dff,
-            "input_seq_len": self.input_seq_len,
-            "target_seq_len": self.target_seq_len,
-            "num_features": self.num_features,
-            "dropout_rate": self.dropout_rate,
-        }
-        return {**base_config, **config}
-
-    @classmethod
-    def from_config(cls, config):
-        # if "dtype" in config and isinstance(config["dtype"], str):
-        #    config["dtype"] = tf.keras.mixed_precision.Policy(config["dtype"])
-        if "dtype" in config and isinstance(config["dtype"], dict):
-            d_config = config["dtype"]
-            if d_config.get("class_name") == "DTypePolicy":
-                policy_name = d_config.get("config", {}).get("name", None)
-                if policy_name is not None:
-                    config["dtype"] = tf.keras.mixed_precision.Policy(policy_name)
-        return cls(**config)
+from py_libraries.ml.model import TransformerForecaster
+from py_libraries.ml.optimizer.schedule import Noam
 
 @tf.keras.utils.register_keras_serializable()
 class DirectionalAccuracy(tf.keras.metrics.Metric):
@@ -342,87 +37,82 @@ class DirectionalAccuracy(tf.keras.metrics.Metric):
 
 @tf.keras.utils.register_keras_serializable()
 class CustomCandleLoss(tf.keras.losses.Loss):
-    def __init__(self, penalty_direction_weight=2.0, penalty_size_weight=1.0, penalty_body_weight=1.0, name="custom_candle_loss", **kwargs):
+    def __init__(self, 
+                 penalty_direction_weight=1.0, 
+                 penalty_open_weight=1.0, 
+                 penalty_close_weight=1.0,
+                 penalty_size_weight=1.0, 
+                 penalty_body_weight=1.0, 
+                 name="custom_candle_loss", **kwargs):
         """
         Initializes the custom candle loss.
 
         Args:
-          penalty_direction_weight: Multiplier for the direction penalty applied to errors in open and close.
+          penalty_direction_weight: Multiplier for the direction mismatch penalty.
+          penalty_open_weight: Multiplier for the open error penalty (applied always).
+          penalty_close_weight: Multiplier for the close error penalty (applied always).
+          penalty_size_weight: Multiplier for the penalty on the difference in overall candle size (high - low).
+          penalty_body_weight: Multiplier for the penalty on the difference in candle body size (abs(open - close)).
           name: Name for the loss function.
           **kwargs: Additional keyword arguments.
         """
         super(CustomCandleLoss, self).__init__(name=name, **kwargs)
         self.penalty_direction_weight = penalty_direction_weight
+        self.penalty_open_weight = penalty_open_weight
+        self.penalty_close_weight = penalty_close_weight
         self.penalty_size_weight = penalty_size_weight
         self.penalty_body_weight = penalty_body_weight
 
     def call(self, y_true, y_pred):
         """
-        Computes the loss.
+        Computes the loss as the sum of:
+          - Baseline MSE over candlestick features [open, high, low, close].
+          - Ordering penalties ensuring predicted high is max and predicted low is min.
+          - A penalty for overall direction mismatch.
+          - A separate penalty for the open price error (applied always).
+          - A separate penalty for the close price error (applied always).
+          - A penalty for the difference in overall candle size (high - low).
+          - A penalty for the difference in candle body size (abs(open - close)).
 
-        The loss is computed as the sum of:
-          - Baseline MSE over the candlestick features [open, high, low, close].
-          - A penalty if the predicted high is not the maximum among the four prices.
-          - A penalty if the predicted low is not the minimum among the four prices.
-          - A penalty if the predicted candle direction (close - open) does not match the true direction,
-            with a higher weight applied for open and close errors.
-          - A penalty for the difference in candle size (high - low) between the prediction and ground truth.
-
-        Assumes the first four features in both y_true and y_pred correspond to [open, high, low, close].
-
-        Args:
-          y_true: Ground truth tensor of shape (..., 4).
-          y_pred: Prediction tensor of the same shape as y_true.
-        
-        Returns:
-          A scalar tensor representing the total loss.
+        Assumes the first four features in y_true and y_pred are [open, high, low, close].
         """
         # --- Baseline MSE over open, high, low, close ---
-        mse = tf.reduce_mean(tf.square(y_true - y_pred))
+        mse = tf.reduce_mean(tf.square(y_true[..., :4] - y_pred[..., :4]))
         
         # --- Ordering Penalties ---
-        # Predicted candlestick prices (assumed order: open, high, low, close)
-        prices_pred = y_pred[..., :4]
-        max_price_pred = tf.reduce_max(prices_pred, axis=-1)  # highest value in prediction
-        min_price_pred = tf.reduce_min(prices_pred, axis=-1)  # lowest value in prediction
+        prices_pred = y_pred[..., :4]  # [open, high, low, close]
+        max_price_pred = tf.reduce_max(prices_pred, axis=-1)  # predicted highest value
+        min_price_pred = tf.reduce_min(prices_pred, axis=-1)  # predicted lowest value
         
-        # Penalize if predicted high (index 1) isn't the max or predicted low (index 2) isn't the min
+        # Penalize if predicted high (index 1) isn't the max or predicted low (index 2) isn't the min.
         penalty_high = tf.square(max_price_pred - y_pred[..., 1])
-        penalty_low = tf.square(y_pred[..., 2] - min_price_pred)
+        penalty_low  = tf.square(y_pred[..., 2] - min_price_pred)
         
-        # --- Directional Penalty ---
-        # Compute the true and predicted direction based on open and close prices.
+        # --- Directional Penalty (Categorical) ---
         true_direction = tf.sign(y_true[..., 3] - y_true[..., 0])
         pred_direction = tf.sign(y_pred[..., 3] - y_pred[..., 0])
-        
-        # Create a mask that is 1.0 when the direction does not match
         direction_mismatch = tf.cast(tf.not_equal(true_direction, pred_direction), tf.float32)
+        penalty_direction = self.penalty_direction_weight * tf.reduce_mean(direction_mismatch)
         
-        # Compute squared errors for open and close
+        # --- Open and Close Error Penalties (Always Applied) ---
         error_open = tf.square(y_true[..., 0] - y_pred[..., 0])
         error_close = tf.square(y_true[..., 3] - y_pred[..., 3])
+        penalty_open = self.penalty_open_weight * tf.reduce_mean(error_open)
+        penalty_close = self.penalty_close_weight * tf.reduce_mean(error_close)
         
-        # Apply a higher penalty when the predicted direction is wrong
-        penalty_direction = self.penalty_direction_weight * (error_open + error_close) * direction_mismatch
-
         # --- Candle Size Penalty ---
-        # Calculate true and predicted candle sizes: high - low
         true_size = y_true[..., 1] - y_true[..., 2]
         pred_size = y_pred[..., 1] - y_pred[..., 2]
-        penalty_size = self.penalty_size_weight * tf.square(true_size - pred_size)
+        penalty_size = self.penalty_size_weight * tf.reduce_mean(tf.square(true_size - pred_size))
         
-         # --- Candle Body Size Penalty ---
-        # Calculate candle body size as the absolute difference between open and close.
-        true_body_size = tf.abs(y_true[..., 3] - y_true[..., 0])
-        pred_body_size = tf.abs(y_pred[..., 3] - y_pred[..., 0])
-        penalty_body = self.penalty_body_weight * tf.square(true_body_size - pred_body_size)
+        # --- Candle Body Size Penalty ---
+        true_body = tf.abs(y_true[..., 3] - y_true[..., 0])
+        pred_body = tf.abs(y_pred[..., 3] - y_pred[..., 0])
+        penalty_body = self.penalty_body_weight * tf.reduce_mean(tf.square(true_body - pred_body))
         
-        # --- Combine Loss Components ---
-        penalty_order = tf.reduce_mean(penalty_high + penalty_low)
-        penalty_dir = tf.reduce_mean(penalty_direction)
-        penalty_siz = tf.reduce_mean(penalty_size)
-        penalty_bod = tf.reduce_mean(penalty_body)
-        total_loss = mse + penalty_order + penalty_dir + penalty_siz + penalty_bod
+        # --- Combine All Loss Components ---
+        penalty_order = tf.reduce_mean(penalty_high) + tf.reduce_mean(penalty_low)
+        total_loss = mse + penalty_order + penalty_direction + penalty_open + penalty_close + penalty_size + penalty_body
         
         return total_loss
 
@@ -430,6 +120,10 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         config = super(CustomCandleLoss, self).get_config()
         config.update({
             "penalty_direction_weight": self.penalty_direction_weight,
+            "penalty_open_weight": self.penalty_open_weight,
+            "penalty_close_weight": self.penalty_close_weight,
+            "penalty_size_weight": self.penalty_size_weight,
+            "penalty_body_weight": self.penalty_body_weight,
         })
         return config
         
@@ -552,9 +246,8 @@ if __name__ == '__main__':
                                         dropout_rate)
 
     # Use the custom Noam learning rate schedule
-    learning_rate = CustomSchedule(d_model)
-    optimizer = tf.keras.optimizers.Adam(learning_rate,
-                                        beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+    learning_rate = Noam(d_model)
+    optimizer = tf.keras.optimizers.Adam(learning_rate) # beta_1=0.9, beta_2=0.98, epsilon=1e-9
     transformer.compile(optimizer=optimizer, loss=CustomCandleLoss(penalty_direction_weight=2.0),
                         metrics=[
                             'mse',
