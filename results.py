@@ -63,7 +63,7 @@ def plot_candlestick(ax, candles, x_offset=0, alpha=1.0):
     """
     for i, candle in enumerate(candles):
         x = x_offset + i
-        open_, high, low, close, _ = candle
+        open_, high, low, close = candle[:4]
         color = 'green' if close >= open_ else 'red'
         # Plot the wick (vertical line from low to high)
         ax.plot([x, x], [low, high], color=color, linewidth=1, alpha=alpha)
@@ -126,8 +126,8 @@ def main():
     print("Model loaded from:", model_path)
 
     # Load the test data from the file "data.npz"
-    inputs_test = joblib.load(f'./datas/split/inputs_test.pkl')
-    outputs_test = joblib.load(f'./datas/split/outputs_test.pkl')
+    inputs_test = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_test.pkl')
+    outputs_test = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_test.pkl')
 
     # Evaluate the model on the test set
     compute_metrics(model, inputs_test, outputs_test)
