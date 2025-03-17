@@ -9,7 +9,7 @@ import numpy as np
 import joblib
 
 # internal
-from py_libraries.ml.preprocessing import MinMaxGlobalScaler
+from py_libraries.ml.preprocessing import MinMaxGlobalScaler, trainTestSplit
 from py_libraries.lst import flatten
 from TechnicalIndicators import TechnicalIndicators
 
@@ -79,8 +79,9 @@ def transformDfsDictToDatasDict(dfs_dict, n_candle_input, n_candle_output, step=
 def splitDict(datas_dict, train=0.7, val=0.15, test=0.15, seed=42):
     split_dict = {}
     for key, values in datas_dict.items():
-        inputs_train, inputs_temp, outputs_train, outputs_temp = train_test_split(values['inputs'], values['outputs'], test_size=val+test, random_state=seed)
-        inputs_val, inputs_test, outputs_val, outputs_test = train_test_split(inputs_temp, outputs_temp, test_size=test / (val+test), random_state=seed)
+        
+        inputs_train, inputs_temp, outputs_train, outputs_temp = trainTestSplit(values['inputs'], values['outputs'], test_size=val+test, random_state=seed)
+        inputs_val, inputs_test, outputs_val, outputs_test = trainTestSplit(inputs_temp, outputs_temp, test_size=test / (val+test), random_state=seed)
         split_dict[key] = {'inputs':{'train':inputs_train, 'val':inputs_val, 'test':inputs_test},
                            'outputs':{'train':outputs_train, 'val':outputs_val, 'test':outputs_test}}
     return split_dict
@@ -89,7 +90,8 @@ def scale(split_dict, cols_to_group_for_scale, columns_idx, path):
     def transformData(values, scaler, cols_idx):
         """Apply the respective scaler to each slice and concatenate"""
         values = np.array(values)  # Ensure conversion
-        values[:, :, cols_idx] = scaler.transform(values[:, :, cols_idx])
+        if len(values) > 0:
+            values[:, :, cols_idx] = scaler.transform(values[:, :, cols_idx])
         return values
     path = Path(path)
     inputs_train, inputs_val, inputs_test = [], [], []
@@ -159,8 +161,9 @@ def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
     return base
     
 def main(n_candle_input = 30, n_candle_output = 5, step=None, 
-         split_rates=[0.9, 0.07, 0.03],
+         split_rates=[0.9, 0.1, 0.0],
          indicators_to_add=['rsi', 'macd', 'bollinger']):
+    
     if not np.isclose(sum(split_rates), 1.0):
         raise ValueError(f'split_rates sum must be 1')
     split_str = '_'.join(map(str, split_rates))
@@ -194,8 +197,9 @@ def main(n_candle_input = 30, n_candle_output = 5, step=None,
     save_path = Path(f'./datas/split/{id}/{split_str}')
     save_path.mkdir(parents=True, exist_ok=True)
     for key, values in datas_dict.items():
-        print(key, np.array(values).shape, np.min(values), np.max(values))
-        joblib.dump(np.array(values),save_path  / f'{key}.pkl')
+        if len(values) > 0:
+            print(key, np.array(values).shape, np.min(values), np.max(values))
+            joblib.dump(np.array(values),save_path  / f'{key}.pkl')
 
 
 
