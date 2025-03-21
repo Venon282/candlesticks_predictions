@@ -63,58 +63,77 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         self.penalty_size_weight = penalty_size_weight
         self.penalty_body_weight = penalty_body_weight
 
-    def call(self, y_true, y_pred):
+    def call(self, y_true, y_pred, sample_weight=None):
         """
-        Computes the loss as the sum of:
-          - Baseline MSE over candlestick features [open, high, low, close].
-          - Ordering penalties ensuring predicted high is max and predicted low is min.
+        Computes the loss as the sum of several components on an elementwise (per timestep) basis.
+        This version assumes that y_true and y_pred have shape (batch, T, features) where the first 4 features 
+        correspond to [open, high, low, close]. Optionally, sample_weight (of shape (batch, T)) can be provided to 
+        mask out padded timesteps.
+
+        The loss components are:
+          - MSE over the four candlestick features.
+          - Ordering penalties ensuring predicted high is the max and predicted low is the min.
           - A penalty for overall direction mismatch.
-          - A separate penalty for the open price error (applied always).
-          - A separate penalty for the close price error (applied always).
+          - A penalty on the open error.
+          - A penalty on the close error.
           - A penalty for the difference in overall candle size (high - low).
           - A penalty for the difference in candle body size (abs(open - close)).
-
-        Assumes the first four features in y_true and y_pred are [open, high, low, close].
         """
-        # --- Baseline MSE over open, high, low, close ---
-        mse = tf.reduce_mean(tf.square(y_true[..., :4] - y_pred[..., :4]))
-        
-        # --- Ordering Penalties ---
+        # --- Compute elementwise MSE over open, high, low, close ---
+        mse_elem = tf.square(y_true[..., :4] - y_pred[..., :4])  # shape: (batch, T, 4)
+        mse = tf.reduce_mean(mse_elem, axis=-1)  # shape: (batch, T)
+
+        # --- Ordering penalties ---
         prices_pred = y_pred[..., :4]  # [open, high, low, close]
-        max_price_pred = tf.reduce_max(prices_pred, axis=-1)  # predicted highest value
-        min_price_pred = tf.reduce_min(prices_pred, axis=-1)  # predicted lowest value
-        
-        # Penalize if predicted high (index 1) isn't the max or predicted low (index 2) isn't the min.
-        penalty_high = tf.square(max_price_pred - y_pred[..., 1])
-        penalty_low  = tf.square(y_pred[..., 2] - min_price_pred)
-        
-        # --- Directional Penalty (Categorical) ---
-        true_direction = tf.sign(y_true[..., 3] - y_true[..., 0])
-        pred_direction = tf.sign(y_pred[..., 3] - y_pred[..., 0])
-        direction_mismatch = tf.cast(tf.not_equal(true_direction, pred_direction), tf.float32)
-        penalty_direction = self.penalty_direction_weight * tf.reduce_mean(direction_mismatch)
-        
-        # --- Open and Close Error Penalties (Always Applied) ---
-        error_open = tf.square(y_true[..., 0] - y_pred[..., 0])
-        error_close = tf.square(y_true[..., 3] - y_pred[..., 3])
-        penalty_open = self.penalty_open_weight * tf.reduce_mean(error_open)
-        penalty_close = self.penalty_close_weight * tf.reduce_mean(error_close)
-        
-        # --- Candle Size Penalty ---
-        true_size = y_true[..., 1] - y_true[..., 2]
-        pred_size = y_pred[..., 1] - y_pred[..., 2]
-        penalty_size = self.penalty_size_weight * tf.reduce_mean(tf.square(true_size - pred_size))
-        
-        # --- Candle Body Size Penalty ---
-        true_body = tf.abs(y_true[..., 3] - y_true[..., 0])
-        pred_body = tf.abs(y_pred[..., 3] - y_pred[..., 0])
-        penalty_body = self.penalty_body_weight * tf.reduce_mean(tf.square(true_body - pred_body))
-        
-        # --- Combine All Loss Components ---
-        penalty_order = tf.reduce_mean(penalty_high) + tf.reduce_mean(penalty_low)
-        total_loss = mse + penalty_order + penalty_direction + penalty_open + penalty_close + penalty_size + penalty_body
-        
-        return total_loss
+        max_price_pred = tf.reduce_max(prices_pred, axis=-1)  # shape: (batch, T)
+        min_price_pred = tf.reduce_min(prices_pred, axis=-1)  # shape: (batch, T)
+        penalty_high_elem = tf.square(max_price_pred - y_pred[..., 1])
+        penalty_low_elem  = tf.square(y_pred[..., 2] - min_price_pred)
+        penalty_order_elem = penalty_high_elem + penalty_low_elem  # shape: (batch, T)
+
+        # --- Directional penalty (categorical) ---
+        true_direction = tf.sign(y_true[..., 3] - y_true[..., 0])  # (batch, T)
+        pred_direction = tf.sign(y_pred[..., 3] - y_pred[..., 0])      # (batch, T)
+        direction_mismatch = tf.cast(tf.not_equal(true_direction, pred_direction), tf.float32)  # (batch, T)
+        penalty_direction_elem = self.penalty_direction_weight * direction_mismatch  # (batch, T)
+
+        # --- Open and close error penalties (always applied) ---
+        error_open_elem = tf.square(y_true[..., 0] - y_pred[..., 0])   # (batch, T)
+        error_close_elem = tf.square(y_true[..., 3] - y_pred[..., 3])  # (batch, T)
+        penalty_open_elem = self.penalty_open_weight * error_open_elem
+        penalty_close_elem = self.penalty_close_weight * error_close_elem
+
+        # --- Candle size penalty (high - low) ---
+        true_size = y_true[..., 1] - y_true[..., 2]   # (batch, T)
+        pred_size = y_pred[..., 1] - y_pred[..., 2]     # (batch, T)
+        penalty_size_elem = self.penalty_size_weight * tf.square(true_size - pred_size)
+
+        # --- Candle body penalty (abs(open - close)) ---
+        true_body = tf.abs(y_true[..., 3] - y_true[..., 0])  # (batch, T)
+        pred_body = tf.abs(y_pred[..., 3] - y_pred[..., 0])    # (batch, T)
+        penalty_body_elem = self.penalty_body_weight * tf.square(true_body - pred_body)
+
+        # --- Combine elementwise losses for each timestep ---
+        loss_per_timestep = (
+            mse +
+            penalty_order_elem +
+            penalty_direction_elem +
+            penalty_open_elem +
+            penalty_close_elem +
+            penalty_size_elem +
+            penalty_body_elem
+        )  # shape: (batch, T)
+
+        # --- If sample_weight (mask) is provided, compute the masked average loss ---
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, loss_per_timestep.dtype)  # shape: (batch, T)
+            total_loss = tf.reduce_sum(loss_per_timestep * sample_weight)
+            normalizer = tf.reduce_sum(sample_weight) + 1e-8
+            loss = total_loss / normalizer
+        else:
+            loss = tf.reduce_mean(loss_per_timestep)
+
+        return loss
 
     def get_config(self):
         config = super(CustomCandleLoss, self).get_config()
@@ -123,7 +142,7 @@ class CustomCandleLoss(tf.keras.losses.Loss):
             "penalty_open_weight": self.penalty_open_weight,
             "penalty_close_weight": self.penalty_close_weight,
             "penalty_size_weight": self.penalty_size_weight,
-            "penalty_body_weight": self.penalty_body_weight,
+            "penalty_body_weight": self.penalty_body_weight
         })
         return config
         
@@ -234,15 +253,15 @@ if __name__ == '__main__':
     dff             = 512  # Feed-forward network inner dimension
     dropout_rate    = 0.1
 
-    input_seq_len   = 30   # Number of past candlesticks
-    target_seq_len  = 5    # Number of future candlesticks to predict
-    num_features    = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
+    max_input_seq_len   = 100   # Number of past candlesticks
+    max_target_seq_len  = 30    # Number of future candlesticks to predict
+    num_features        = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
 
     # ----------------------------
     # Instantiate & Compile the Model
     # ----------------------------
     transformer = TransformerForecaster(num_layers, d_model, num_heads, dff,
-                                        input_seq_len, target_seq_len, num_features,
+                                        max_input_seq_len, max_target_seq_len, num_features,
                                         dropout_rate)
 
     # Use the custom Noam learning rate schedule
@@ -256,10 +275,7 @@ if __name__ == '__main__':
                             DirectionalAccuracy(name='directional_accuracy')
                         ])
 
-    # Build the model by running a dummy input through it
-    dummy_encoder = tf.random.uniform((1, input_seq_len, num_features))
-    dummy_decoder = tf.random.uniform((1, target_seq_len, num_features))
-    _ = transformer((dummy_encoder, dummy_decoder), training=False)
+
     transformer.summary()
 
     # Define the number of features (here 5: open, high, low, close, volume)
@@ -285,8 +301,9 @@ if __name__ == '__main__':
     history = transformer.fit(
         x=(inputs_train, decoder_input_train),  # Inputs: (encoder_input, decoder_input)
         y=outputs_train,                        # Target: sequence to predict
+        sample_weight=mask,                     # Masking sequence padding (0 if padded, 1 otherwise)
         validation_data=((inputs_val, decoder_input_val), outputs_val),
-        epochs=200,
+        epochs=10, #200,
         batch_size=64,
         callbacks=callbacks(),
         verbose=2
