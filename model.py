@@ -1,8 +1,9 @@
 import tensorflow as tf
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint #type: ignore
 import os
 import numpy as np
 from pathlib import Path
+import re
 
 from py_libraries.ml.model import TransformerForecaster
 from py_libraries.ml.optimizer.schedule import Noam
@@ -15,12 +16,6 @@ class DirectionalAccuracy(tf.keras.metrics.Metric):
         self.correct = self.add_weight(name='correct', initializer='zeros', dtype=tf.float32)
     
     def update_state(self, y_true, y_pred, sample_weight=None):
-        # print(sample_weight)
-        # if sample_weight is not None:
-        #     print(y_true.shape)
-        #     y_true = tf.boolean_mask(y_true, sample_weight, axis=1)
-        #     print(y_true.shape)
-        #     y_pred = tf.boolean_mask(y_pred, sample_weight)
         # Extract the close price (assuming 4th feature: index 3)
         y_true_close = tf.cast(y_true[..., 3], tf.float32)
         y_pred_close = tf.cast(y_pred[..., 3], tf.float32)
@@ -161,59 +156,6 @@ class CustomCandleLoss(tf.keras.losses.Loss):
             "penalty_body_weight": self.penalty_body_weight
         })
         return config
-        
-# ----------------------------
-# Inference: Autoregressive Forecasting
-# ----------------------------
-@tf.function
-def autoregressive_forecast(model, encoder_input, start_token, target_seq_len):
-    """
-    Generates predictions in an autoregressive manner using a compiled loop.
-
-    Args:
-      model: The trained TransformerForecaster.
-      encoder_input: Past candlestick data of shape (batch, input_seq_len, num_features).
-      start_token: A tensor of shape (num_features,) used as the initial decoder input.
-      target_seq_len: The number of future steps to predict.
-
-    Returns:
-      A tensor of shape (batch, target_seq_len, num_features) representing the forecast.
-    """
-    batch_size = tf.shape(encoder_input)[0]
-    # Create the initial decoder input by repeating the start token for each batch sample.
-    decoder_input = tf.tile(tf.expand_dims(start_token, 0), [batch_size, 1, 1])
-    
-    # Initialize a TensorArray to collect predictions for each time step.
-    predictions_array = tf.TensorArray(dtype=tf.float32, size=target_seq_len)
-
-    # Define the loop condition: iterate until i == target_seq_len.
-    def condition(i, decoder_input, predictions_array):
-        return i < target_seq_len
-
-    # Define the loop body: predict the next token and update the decoder input.
-    def loop_body(i, decoder_input, predictions_array):
-        # Generate predictions using the current decoder input.
-        predictions = model((encoder_input, decoder_input), training=False)
-        # Extract the last token prediction (shape: (batch, 1, num_features)).
-        next_token = predictions[:, -1:, :]
-        # Write the next token (squeezed to remove the time dimension) into the TensorArray.
-        predictions_array = predictions_array.write(i, tf.squeeze(next_token, axis=1))
-        # Append the next token to the decoder input.
-        decoder_input = tf.concat([decoder_input, next_token], axis=1)
-        return i + 1, decoder_input, predictions_array
-
-    # Execute the while loop.
-    i, decoder_input, predictions_array = tf.while_loop(
-        condition,
-        loop_body,
-        loop_vars=[tf.constant(0), decoder_input, predictions_array]
-    )
-    
-    # Stack the TensorArray and transpose to get shape: (batch, target_seq_len, num_features)
-    predictions_stacked = predictions_array.stack()
-    predictions_stacked = tf.transpose(predictions_stacked, perm=[1, 0, 2])
-    
-    return predictions_stacked
 
 def callbacks():
     # Stop training if the validation loss doesn't improve for 10 epochs
@@ -233,45 +175,33 @@ def callbacks():
         verbose=1
     )
 
-    # Reduce the learning rate if the validation loss plateaus
-    # reduce_lr = ReduceLROnPlateau(
-    #     monitor='val_loss',
-    #     factor=0.5,
-    #     patience=5,
-    #     min_lr=1e-8,
-    #     verbose=1
-    # )
-
-    return [early_stopping, model_checkpoint] # , reduce_lr
+    return [early_stopping, model_checkpoint]
 
 
-# Example usage for inference:
-# start_token = tf.zeros((num_features,))  # Alternatively, use a learned start token.
-# predicted_sequence = autoregressive_forecast(transformer, inputs_test, start_token, target_seq_len)
-# print(predicted_sequence.shape)  # Expected: (batch, target_seq_len, num_features)
 if __name__ == '__main__':
     import tensorflow as tf
     import joblib
 
-    split_path = Path(r'C:\Users\ET281306\Desktop\folders\gtw\candlesticks_predictions\datas\split')
-    split_selected_path = Path(r'(5-100)_(1-30)_stepNone_scTrue_rsi_macd_bollinger\7_15_15')
-    #split_selected_path = Path(r'(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger\7_15_15')
-    #split_selected_path = Path(r'(5-100)_(1-5)_stepNone_scTrue_rsi_macd_bollinger\7_15_15')
+    split_folder_path = Path(r'C:\Users\ET281306\Desktop\folders\gtw\candlesticks_predictions\datas\split')
+    split_datas_str = '(5-100)_(1-30)_stepNone_scTrue_rsi_macd_bollinger'
+    split_str = '7_15_15'
+    split_path = split_folder_path / split_datas_str / split_str
+    
     # Load datas
-    inputs_train    = joblib.load(split_path / split_selected_path / 'inputs_train.pkl' , mmap_mode='r')
-    inputs_val      = joblib.load(split_path / split_selected_path / 'inputs_val.pkl'   , mmap_mode='r')
-    inputs_test     = joblib.load(split_path / split_selected_path / 'inputs_test.pkl'  , mmap_mode='r')
-    outputs_train   = joblib.load(split_path / split_selected_path / 'outputs_train.pkl', mmap_mode='r')
-    outputs_val     = joblib.load(split_path / split_selected_path / 'outputs_val.pkl'  , mmap_mode='r')
-    outputs_test    = joblib.load(split_path / split_selected_path / 'outputs_test.pkl' , mmap_mode='r')
+    inputs_train    = joblib.load(split_path / 'inputs_train.pkl' , mmap_mode='r')
+    inputs_val      = joblib.load(split_path / 'inputs_val.pkl'   , mmap_mode='r')
+    inputs_test     = joblib.load(split_path / 'inputs_test.pkl'  , mmap_mode='r')
+    outputs_train   = joblib.load(split_path / 'outputs_train.pkl', mmap_mode='r')
+    outputs_val     = joblib.load(split_path / 'outputs_val.pkl'  , mmap_mode='r')
+    outputs_test    = joblib.load(split_path / 'outputs_test.pkl' , mmap_mode='r')
     
     # Load mask
-    inputs_mask_train    = joblib.load(split_path / split_selected_path / 'inputs_mask_train.pkl' , mmap_mode='r')
-    inputs_mask_val      = joblib.load(split_path / split_selected_path / 'inputs_mask_val.pkl'   , mmap_mode='r')
-    inputs_mask_test     = joblib.load(split_path / split_selected_path / 'inputs_mask_test.pkl'  , mmap_mode='r')
-    outputs_mask_train   = joblib.load(split_path / split_selected_path / 'outputs_mask_train.pkl', mmap_mode='r')
-    outputs_mask_val     = joblib.load(split_path / split_selected_path / 'outputs_mask_val.pkl'  , mmap_mode='r')
-    outputs_mask_test    = joblib.load(split_path / split_selected_path / 'outputs_mask_test.pkl' , mmap_mode='r')
+    inputs_mask_train    = joblib.load(split_path / 'inputs_mask_train.pkl' , mmap_mode='r')
+    inputs_mask_val      = joblib.load(split_path / 'inputs_mask_val.pkl'   , mmap_mode='r')
+    inputs_mask_test     = joblib.load(split_path / 'inputs_mask_test.pkl'  , mmap_mode='r')
+    outputs_mask_train   = joblib.load(split_path / 'outputs_mask_train.pkl', mmap_mode='r')
+    outputs_mask_val     = joblib.load(split_path / 'outputs_mask_val.pkl'  , mmap_mode='r')
+    outputs_mask_test    = joblib.load(split_path / 'outputs_mask_test.pkl' , mmap_mode='r')
 
     # ----------------------------
     # Hyperparameters
@@ -282,15 +212,17 @@ if __name__ == '__main__':
     dff             = 2 # 512  # Feed-forward network inner dimension
     dropout_rate    = 0.1
 
-    max_input_seq_len   = 100   # Number of past candlesticks
-    max_target_seq_len  = 30    # Number of future candlesticks to predict
+    bounds_pattern = r'\((\d+)-(\d+)\)_(\d+)-(\d+)_'
+    match = re.search(bounds_pattern, split_datas_str)
+    input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max = match.groups()
+
     num_features        = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
 
     # ----------------------------
     # Instantiate & Compile the Model
     # ----------------------------
     transformer = TransformerForecaster(num_layers, d_model, num_heads, dff,
-                                        max_input_seq_len, max_target_seq_len, num_features,
+                                        input_seq_len_max, target_seq_len_max, num_features,
                                         dropout_rate)
 
     # Use the custom Noam learning rate schedule
