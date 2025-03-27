@@ -144,6 +144,23 @@ def main():
         plot_example(i, inputs_test, outputs_test, predictions, save_dir='plot')
 
     print("Performance plots have been saved in the 'plot' folder.")
+    
+    
+# def plot_attention_head(in_tokens, translated_tokens, attention):
+#   # The model didn't generate `<START>` in the output. Skip it.
+#   translated_tokens = translated_tokens[1:]
+
+#   ax = plt.gca()
+#   ax.matshow(attention)
+#   ax.set_xticks(range(len(in_tokens)))
+#   ax.set_yticks(range(len(translated_tokens)))
+
+#   labels = [label.decode('utf-8') for label in in_tokens.numpy()]
+#   ax.set_xticklabels(
+#       labels, rotation=90)
+
+#   labels = [label.decode('utf-8') for label in translated_tokens.numpy()]
+#   ax.set_yticklabels(labels)
 
 if __name__ == '__main__':
     main()

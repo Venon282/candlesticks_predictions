@@ -1,6 +1,8 @@
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import os
+import numpy as np
+from pathlib import Path
 
 from py_libraries.ml.model import TransformerForecaster
 from py_libraries.ml.optimizer.schedule import Noam
@@ -13,9 +15,15 @@ class DirectionalAccuracy(tf.keras.metrics.Metric):
         self.correct = self.add_weight(name='correct', initializer='zeros', dtype=tf.float32)
     
     def update_state(self, y_true, y_pred, sample_weight=None):
+        # print(sample_weight)
+        # if sample_weight is not None:
+        #     print(y_true.shape)
+        #     y_true = tf.boolean_mask(y_true, sample_weight, axis=1)
+        #     print(y_true.shape)
+        #     y_pred = tf.boolean_mask(y_pred, sample_weight)
         # Extract the close price (assuming 4th feature: index 3)
-        y_true_close = y_true[..., 3]
-        y_pred_close = y_pred[..., 3]
+        y_true_close = tf.cast(y_true[..., 3], tf.float32)
+        y_pred_close = tf.cast(y_pred[..., 3], tf.float32)
         # Calculate differences between consecutive time steps along axis=1 (time axis)
         y_true_diff = y_true_close[:, 1:] - y_true_close[:, :-1]
         y_pred_diff = y_pred_close[:, 1:] - y_pred_close[:, :-1]
@@ -25,8 +33,16 @@ class DirectionalAccuracy(tf.keras.metrics.Metric):
         # Compare directional predictions: correct if both signs are equal
         correct = tf.cast(tf.equal(y_true_sign, y_pred_sign), tf.float32)
         # Update the counts
+        if sample_weight is not None:
+            # Ensure sample_weight is cast to correct type and adjust shape: drop first timestep.
+            sample_weight = tf.cast(sample_weight, correct.dtype)
+            sample_weight = sample_weight[:, 1:]
+            correct *= sample_weight
+            self.total.assign_add(tf.reduce_sum(sample_weight))
+        else:
+            self.total.assign_add(tf.cast(tf.size(correct), tf.float32))
+            
         self.correct.assign_add(tf.reduce_sum(correct))
-        self.total.assign_add(tf.cast(tf.size(correct), tf.float32))
     
     def result(self):
         return tf.math.divide_no_nan(self.correct, self.total)
@@ -228,6 +244,7 @@ def callbacks():
 
     return [early_stopping, model_checkpoint] # , reduce_lr
 
+
 # Example usage for inference:
 # start_token = tf.zeros((num_features,))  # Alternatively, use a learned start token.
 # predicted_sequence = autoregressive_forecast(transformer, inputs_test, start_token, target_seq_len)
@@ -236,21 +253,33 @@ if __name__ == '__main__':
     import tensorflow as tf
     import joblib
 
-    inputs_train    = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_train.pkl')
-    inputs_val      = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_val.pkl')
-    inputs_test     = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/inputs_test.pkl')
-    outputs_train   = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_train.pkl')
-    outputs_val     = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_val.pkl')
-    outputs_test    = joblib.load(f'./datas/split/30_5_None_rsi_macd_bollinger/9_07_03/outputs_test.pkl')
-
+    split_path = Path(r'C:\Users\ET281306\Desktop\folders\gtw\candlesticks_predictions\datas\split')
+    split_selected_path = Path(r'(5-100)_(1-30)_stepNone_scTrue_rsi_macd_bollinger\7_15_15')
+    #split_selected_path = Path(r'(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger\7_15_15')
+    #split_selected_path = Path(r'(5-100)_(1-5)_stepNone_scTrue_rsi_macd_bollinger\7_15_15')
+    # Load datas
+    inputs_train    = joblib.load(split_path / split_selected_path / 'inputs_train.pkl' , mmap_mode='r')
+    inputs_val      = joblib.load(split_path / split_selected_path / 'inputs_val.pkl'   , mmap_mode='r')
+    inputs_test     = joblib.load(split_path / split_selected_path / 'inputs_test.pkl'  , mmap_mode='r')
+    outputs_train   = joblib.load(split_path / split_selected_path / 'outputs_train.pkl', mmap_mode='r')
+    outputs_val     = joblib.load(split_path / split_selected_path / 'outputs_val.pkl'  , mmap_mode='r')
+    outputs_test    = joblib.load(split_path / split_selected_path / 'outputs_test.pkl' , mmap_mode='r')
+    
+    # Load mask
+    inputs_mask_train    = joblib.load(split_path / split_selected_path / 'inputs_mask_train.pkl' , mmap_mode='r')
+    inputs_mask_val      = joblib.load(split_path / split_selected_path / 'inputs_mask_val.pkl'   , mmap_mode='r')
+    inputs_mask_test     = joblib.load(split_path / split_selected_path / 'inputs_mask_test.pkl'  , mmap_mode='r')
+    outputs_mask_train   = joblib.load(split_path / split_selected_path / 'outputs_mask_train.pkl', mmap_mode='r')
+    outputs_mask_val     = joblib.load(split_path / split_selected_path / 'outputs_mask_val.pkl'  , mmap_mode='r')
+    outputs_mask_test    = joblib.load(split_path / split_selected_path / 'outputs_mask_test.pkl' , mmap_mode='r')
 
     # ----------------------------
     # Hyperparameters
     # ----------------------------
-    num_layers      = 4    # Increased depth for higher model capacity
-    d_model         = 128  # Embedding dimension
-    num_heads       = 8    # Number of attention heads
-    dff             = 512  # Feed-forward network inner dimension
+    num_layers      = 1 # 4    # Increased depth for higher model capacity
+    d_model         = 2 # 128  # Embedding dimension
+    num_heads       = 1 # 8    # Number of attention heads
+    dff             = 2 # 512  # Feed-forward network inner dimension
     dropout_rate    = 0.1
 
     max_input_seq_len   = 100   # Number of past candlesticks
@@ -266,14 +295,15 @@ if __name__ == '__main__':
 
     # Use the custom Noam learning rate schedule
     learning_rate = Noam(d_model)
-    optimizer = tf.keras.optimizers.Adam(learning_rate) # beta_1=0.9, beta_2=0.98, epsilon=1e-9
+    optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
     transformer.compile(optimizer=optimizer, loss=CustomCandleLoss(penalty_direction_weight=2.0),
                         metrics=[
                             'mse',
                             tf.keras.metrics.MeanAbsoluteError(name='mae'),
                             tf.keras.metrics.RootMeanSquaredError(name='rmse'),
                             DirectionalAccuracy(name='directional_accuracy')
-                        ])
+                        ],
+                        weighted_metrics=[DirectionalAccuracy(name='directional_accuracy')])
 
 
     transformer.summary()
@@ -290,21 +320,30 @@ if __name__ == '__main__':
         tf.broadcast_to(tf.expand_dims(start_token, 0), [tf.shape(outputs_train)[0], 1, num_features]),
         outputs_train[:, :-1, :]
     ], axis=1)
-
+    
     # Construction of the decoder input for validation
     decoder_input_val = tf.concat([
         tf.broadcast_to(tf.expand_dims(start_token, 0), [tf.shape(outputs_val)[0], 1, num_features]),
         outputs_val[:, :-1, :]
     ], axis=1)
+    
+    batch_size = 64
+
+    train_dataset = tf.data.Dataset.from_tensor_slices((
+        (np.array(inputs_train), np.array(decoder_input_train), {"encoder": np.array(inputs_mask_train), "decoder": np.array(outputs_mask_train)}),
+        np.array(outputs_train), np.array(outputs_mask_train)
+    )).batch(batch_size)
+
+    val_dataset = tf.data.Dataset.from_tensor_slices((
+        (np.array(inputs_val), np.array(decoder_input_val), {"encoder": np.array(inputs_mask_val), "decoder": np.array(outputs_mask_val)}),
+        np.array(outputs_val), np.array(outputs_mask_val)
+    )).batch(batch_size)
 
     # Training the model with training and validation data
     history = transformer.fit(
-        x=(inputs_train, decoder_input_train),  # Inputs: (encoder_input, decoder_input)
-        y=outputs_train,                        # Target: sequence to predict
-        sample_weight=mask,                     # Masking sequence padding (0 if padded, 1 otherwise)
-        validation_data=((inputs_val, decoder_input_val), outputs_val),
-        epochs=10, #200,
-        batch_size=64,
+        train_dataset,
+        validation_data=val_dataset,
+        epochs=2, #200,
         callbacks=callbacks(),
         verbose=2
     )
@@ -316,13 +355,30 @@ if __name__ == '__main__':
     ], axis=1)
 
     # Evaluation on the test set
+    pred = transformer((inputs_test, {'encoder': inputs_mask_test, 'decoder': outputs_mask_test }))
     test_loss = transformer.evaluate(
-        x=(inputs_test, decoder_input_test),
+        x=(inputs_test, {'encoder': inputs_mask_test, 'decoder': outputs_mask_test }),
         y=outputs_test,
         batch_size=64
     )
-    print("Test Loss:", test_loss)
+
 
     # --- Saving the trained model ---
     os.makedirs('saved_model', exist_ok=True)
     transformer.save('saved_model/transformer_forecaster.keras')
+    
+    print('Prediction')
+    mask = np.array(inputs_mask_test[0], dtype=bool)
+    input = np.array(inputs_test[0])[mask]
+    print(input.shape)
+    prediction = transformer(inputs=(input, 5))
+    
+    print(prediction)
+    
+    mask = np.array(outputs_mask_test[0], dtype=bool)
+    output = np.array(outputs_test[0])[mask]
+    
+    print('True')
+    print(output)
+    
+    
