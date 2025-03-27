@@ -214,8 +214,8 @@ if __name__ == '__main__':
 
     bounds_pattern = r'\((\d+)-(\d+)\)_(\d+)-(\d+)_'
     match = re.search(bounds_pattern, split_datas_str)
-    input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max = match.groups()
 
+    [input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max] = [int(x) for x in match.groups()]
     num_features        = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
 
     # ----------------------------
