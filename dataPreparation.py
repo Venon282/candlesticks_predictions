@@ -76,9 +76,8 @@ def sequence(datas, n_candle_input_min, n_candle_input_max, n_candle_output_min,
         
         step_current = n_candle_input + n_candle_output if step is None else step  
         
-        # -1 because the last one is include and not exclude as normal python
-        x_sequence = np.concatenate((np.tile(fake_candle, (n_fake_candle_input, 1)), data[i: i + n_candle_input -1]))
-        y_sequence = np.concatenate((data[i + n_candle_input: i + n_candle_input + n_candle_output - 1], np.tile(fake_candle, (n_fake_candle_output, 1))))
+        x_sequence = np.concatenate((np.tile(fake_candle, (n_fake_candle_input, 1)), data[i: i + n_candle_input]))
+        y_sequence = np.concatenate((data[i + n_candle_input: i + n_candle_input + n_candle_output], np.tile(fake_candle, (n_fake_candle_output, 1))))
         mask_x_sequence = np.concatenate((np.zeros(n_fake_candle_input), np.ones(n_candle_input)))
         mask_y_sequence = np.concatenate((np.ones(n_candle_output), np.zeros(n_fake_candle_output)))  
         mask_x.append(mask_x_sequence)
@@ -214,7 +213,7 @@ def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
     return base
     
 def main(n_candle_input_min = 5, n_candle_input_max = 100, 
-         n_candle_output_min = 1, n_candle_output_max = 30, 
+         n_candle_output_min = 1, n_candle_output_max = 5, 
          step=None, size_coherence=True,  split_rates=[0.7, 0.15, 0.15],
          indicators_to_add=['rsi', 'macd', 'bollinger'],
          sep_file = '_'):
