@@ -164,7 +164,7 @@ if __name__ == '__main__':
 
     save_folder_path = Path(r'./saved_model')
     split_folder_path = Path(r'./datas/split')
-    split_datas_str = '(5-100)_(1-30)_stepNone_scTrue_rsi_macd_bollinger'
+    split_datas_str = '(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger'
     split_str = '7_15_15'
     model_file_name = 'transformer.keras'
     
@@ -191,16 +191,23 @@ if __name__ == '__main__':
     # ----------------------------
     # Hyperparameters
     # ----------------------------
-    num_layers      = 1 #4    # Increased depth for higher model capacity
-    d_model         = 1 #128  # Embedding dimension
-    num_heads       = 1 #8    # Number of attention heads
-    dff             = 1 #512  # Feed-forward network inner dimension
+    num_layers      = 4    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
+    d_model         = 128  # Latent space size (BERT de taille "base" utilise 768, et BERT "large" utilise 1024.)
+    num_heads       = 8    # Number of attention heads (d_model = 768 est num_heads = 12)
+    dff             = 512  # Feed-forward network inner dimension. The larger the dimension of dff, the more complex nonlinear transformations the model can learn. (2048 et 4096)
     dropout_rate    = 0.1
     batch_size      = 64
-    es_patience     = 10
+    epochs          = 200
+    warmup_rate     = 0.1
+    es_patience_rate= 0.1
+    es_patience     = epochs * es_patience_rate
+    num_steps       = int(len(inputs_train) / batch_size)
+    total_steps     = epochs * num_steps
+    warmup_steps    = int(total_steps * warmup_rate)
+    num_features    = outputs_train.shape[-1]
     
     # Implement id model
-    id = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_esp{es_patience}'.replace('.', ',')
+    id = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_e{epochs}_esp{es_patience}_wu{warmup_steps}'.replace('.', ',')
     save_path = save_path / id
     save_path.mkdir(parents=True, exist_ok=True)
 
@@ -208,8 +215,6 @@ if __name__ == '__main__':
     bounds_pattern = r'\((\d+)-(\d+)\)_\((\d+)-(\d+)\)_'
     match = re.search(bounds_pattern, split_datas_str)
     [input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max] = [int(x) for x in match.groups()]
-    
-    num_features        = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
     
     # Display infos
     print(f'{num_features=}')
@@ -219,6 +224,19 @@ if __name__ == '__main__':
     print(f'{outputs_train.shape=}')
     print(f'{outputs_val.shape=}')
     print(f'{outputs_test.shape=}')
+    print(f'{num_layers=}')  
+    print(f'{d_model=}')     
+    print(f'{num_heads=}')   
+    print(f'{dff=}')         
+    print(f'{dropout_rate=}')
+    print(f'{es_patience=}') 
+    print(f'{batch_size=}')  
+    print(f'{epochs=}')      
+    print(f'{warmup_rate=}') 
+    print(f'{num_steps=}')   
+    print(f'{total_steps=}') 
+    print(f'{warmup_steps=}')
+    print(f'{num_features=}')
 
     # ----------------------------
     # Instantiate & Compile the Model
@@ -229,7 +247,7 @@ if __name__ == '__main__':
     transformer.summary()
 
     # Use the custom Noam learning rate schedule
-    learning_rate = Noam(d_model)
+    learning_rate = Noam(d_model, warmup_steps=warmup_steps)
     optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
     transformer.compile(optimizer=optimizer, loss=CustomCandleLoss(penalty_direction_weight=2.0),
                         metrics=[
@@ -290,7 +308,7 @@ if __name__ == '__main__':
     history = transformer.fit(
         train_dataset,
         validation_data=val_dataset,
-        epochs=2, #200,
+        epochs=epochs, #200,
         callbacks=callbacks,
         verbose=2
     )
