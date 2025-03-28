@@ -170,7 +170,7 @@ if __name__ == '__main__':
     
     split_path = split_folder_path / split_datas_str / split_str
     save_path  = save_folder_path  / split_datas_str / split_str
-    save_path.mkdir(parents=True, exist_ok=True)
+    
     
     # Load datas
     inputs_train    = joblib.load(split_path / 'inputs_train.pkl' , mmap_mode='r')
@@ -198,7 +198,13 @@ if __name__ == '__main__':
     dropout_rate    = 0.1
     batch_size      = 64
     es_patience     = 10
+    
+    # Implement id model
+    id = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_esp{es_patience}'.replace('.', ',')
+    save_path = save_path / id
+    save_path.mkdir(parents=True, exist_ok=True)
 
+    # Get datas bounds
     bounds_pattern = r'\((\d+)-(\d+)\)_\((\d+)-(\d+)\)_'
     match = re.search(bounds_pattern, split_datas_str)
     [input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max] = [int(x) for x in match.groups()]
