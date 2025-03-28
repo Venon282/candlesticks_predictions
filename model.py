@@ -157,35 +157,20 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         })
         return config
 
-def callbacks():
-    # Stop training if the validation loss doesn't improve for 10 epochs
-    early_stopping = EarlyStopping(
-        monitor='val_loss', 
-        patience=10, 
-        restore_best_weights=True,
-        verbose=1
-    )
-
-    # Save the model weights when the validation loss improves
-    model_checkpoint = ModelCheckpoint(
-        filepath='saved_model/transformer_best.keras',
-        monitor='val_loss',
-        save_best_only=True,
-        save_weights_only=False,
-        verbose=1
-    )
-
-    return [early_stopping, model_checkpoint]
-
 
 if __name__ == '__main__':
     import tensorflow as tf
     import joblib
 
-    split_folder_path = Path(r'C:\Users\ET281306\Desktop\folders\gtw\candlesticks_predictions\datas\split')
+    save_folder_path = Path(r'./saved_model')
+    split_folder_path = Path(r'./datas/split')
     split_datas_str = '(5-100)_(1-30)_stepNone_scTrue_rsi_macd_bollinger'
     split_str = '7_15_15'
+    model_file_name = 'transformer.keras'
+    
     split_path = split_folder_path / split_datas_str / split_str
+    save_path  = save_folder_path  / split_datas_str / split_str
+    save_path.mkdir(parents=True, exist_ok=True)
     
     # Load datas
     inputs_train    = joblib.load(split_path / 'inputs_train.pkl' , mmap_mode='r')
@@ -206,17 +191,28 @@ if __name__ == '__main__':
     # ----------------------------
     # Hyperparameters
     # ----------------------------
-    num_layers      = 1 # 4    # Increased depth for higher model capacity
-    d_model         = 2 # 128  # Embedding dimension
-    num_heads       = 1 # 8    # Number of attention heads
-    dff             = 2 # 512  # Feed-forward network inner dimension
+    num_layers      = 1 #4    # Increased depth for higher model capacity
+    d_model         = 1 #128  # Embedding dimension
+    num_heads       = 1 #8    # Number of attention heads
+    dff             = 1 #512  # Feed-forward network inner dimension
     dropout_rate    = 0.1
+    batch_size      = 64
+    es_patience     = 10
 
-    bounds_pattern = r'\((\d+)-(\d+)\)_(\d+)-(\d+)_'
+    bounds_pattern = r'\((\d+)-(\d+)\)_\((\d+)-(\d+)\)_'
     match = re.search(bounds_pattern, split_datas_str)
-
     [input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max] = [int(x) for x in match.groups()]
+    
     num_features        = outputs_train.shape[-1]    # Candlestick features: open, high, low, close, volume
+    
+    # Display infos
+    print(f'{num_features=}')
+    print(f'{inputs_train.shape=}')
+    print(f'{inputs_val.shape=}')
+    print(f'{inputs_test.shape=}')
+    print(f'{outputs_train.shape=}')
+    print(f'{outputs_val.shape=}')
+    print(f'{outputs_test.shape=}')
 
     # ----------------------------
     # Instantiate & Compile the Model
@@ -224,6 +220,7 @@ if __name__ == '__main__':
     transformer = TransformerForecaster(num_layers, d_model, num_heads, dff,
                                         input_seq_len_max, target_seq_len_max, num_features,
                                         dropout_rate)
+    transformer.summary()
 
     # Use the custom Noam learning rate schedule
     learning_rate = Noam(d_model)
@@ -236,12 +233,6 @@ if __name__ == '__main__':
                             DirectionalAccuracy(name='directional_accuracy')
                         ],
                         weighted_metrics=[DirectionalAccuracy(name='directional_accuracy')])
-
-
-    transformer.summary()
-
-    # Define the number of features (here 5: open, high, low, close, volume)
-    # num_features = outputs_train.shape[-1]
 
     # Creating a start token for the decoder
     start_token = tf.zeros((num_features,), dtype=tf.float32)
@@ -259,8 +250,7 @@ if __name__ == '__main__':
         outputs_val[:, :-1, :]
     ], axis=1)
     
-    batch_size = 64
-
+    
     train_dataset = tf.data.Dataset.from_tensor_slices((
         (np.array(inputs_train), np.array(decoder_input_train), {"encoder": np.array(inputs_mask_train), "decoder": np.array(outputs_mask_train)}),
         np.array(outputs_train), np.array(outputs_mask_train)
@@ -270,47 +260,42 @@ if __name__ == '__main__':
         (np.array(inputs_val), np.array(decoder_input_val), {"encoder": np.array(inputs_mask_val), "decoder": np.array(outputs_mask_val)}),
         np.array(outputs_val), np.array(outputs_mask_val)
     )).batch(batch_size)
+    
+    callbacks = [
+        # Stop training if the validation loss doesn't improve for 10 epochs
+        EarlyStopping(
+            monitor='val_loss', 
+            patience=es_patience, 
+            restore_best_weights=True,
+            verbose=1
+        ),
+
+        # Save the model weights when the validation loss improves
+        ModelCheckpoint(
+            filepath=save_path / model_file_name,
+            monitor='val_loss',
+            save_best_only=True,
+            save_weights_only=False,
+            verbose=1
+        )
+    ]
 
     # Training the model with training and validation data
     history = transformer.fit(
         train_dataset,
         validation_data=val_dataset,
         epochs=2, #200,
-        callbacks=callbacks(),
+        callbacks=callbacks,
         verbose=2
     )
-
-    # Preparing the decoder input for testing (similar to training)
-    decoder_input_test = tf.concat([
-        tf.broadcast_to(tf.expand_dims(start_token, 0), [tf.shape(outputs_test)[0], 1, num_features]),
-        outputs_test[:, :-1, :]
-    ], axis=1)
-
-    # Evaluation on the test set
-    pred = transformer((inputs_test, {'encoder': inputs_mask_test, 'decoder': outputs_mask_test }))
+    
+    print('Evaluate')
     test_loss = transformer.evaluate(
         x=(inputs_test, {'encoder': inputs_mask_test, 'decoder': outputs_mask_test }),
         y=outputs_test,
-        batch_size=64
+        batch_size=batch_size,
+        verbose=1
     )
 
-
-    # --- Saving the trained model ---
-    os.makedirs('saved_model', exist_ok=True)
-    transformer.save('saved_model/transformer_forecaster.keras')
-    
-    print('Prediction')
-    mask = np.array(inputs_mask_test[0], dtype=bool)
-    input = np.array(inputs_test[0])[mask]
-    print(input.shape)
-    prediction = transformer(inputs=(input, 5))
-    
-    print(prediction)
-    
-    mask = np.array(outputs_mask_test[0], dtype=bool)
-    output = np.array(outputs_test[0])[mask]
-    
-    print('True')
-    print(output)
     
     
