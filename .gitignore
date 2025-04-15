@@ -1,5 +1,6 @@
 *.pkl
 *.keras
+*.png
 __pycache__/
 datas/
 saved_model/

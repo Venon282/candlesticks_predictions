@@ -1,9 +1,16 @@
 import tensorflow as tf
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+        
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint #type: ignore
 import os
 import numpy as np
 from pathlib import Path
 import re
+import joblib
 
 from py_libraries.ml.model import TransformerForecaster
 from py_libraries.ml.optimizer.schedule import Noam
@@ -91,7 +98,7 @@ class CustomCandleLoss(tf.keras.losses.Loss):
           - A penalty for the difference in candle body size (abs(open - close)).
         """
         # --- Compute elementwise MSE over open, high, low, close ---
-        mse_elem = tf.square(y_true[..., :4] - y_pred[..., :4])  # shape: (batch, T, 4)
+        mse_elem = tf.square(y_true - y_pred)  # shape: (batch, T, n_features)
         mse = tf.reduce_mean(mse_elem, axis=-1)  # shape: (batch, T)
 
         # --- Ordering penalties ---
@@ -159,9 +166,6 @@ class CustomCandleLoss(tf.keras.losses.Loss):
 
 
 if __name__ == '__main__':
-    import tensorflow as tf
-    import joblib
-
     save_folder_path = Path(r'./saved_model')
     split_folder_path = Path(r'./datas/split')
     split_datas_str = '(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger'
@@ -191,24 +195,24 @@ if __name__ == '__main__':
     # ----------------------------
     # Hyperparameters
     # ----------------------------
-    num_layers      = 4    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
-    d_model         = 128  # Latent space size (BERT de taille "base" utilise 768, et BERT "large" utilise 1024.)
-    num_heads       = 8    # Number of attention heads (d_model = 768 est num_heads = 12)
-    dff             = 512  # Feed-forward network inner dimension. The larger the dimension of dff, the more complex nonlinear transformations the model can learn. (2048 et 4096)
+    num_layers      = 1 #4    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
+    d_model         = 1 #128  # Latent space size (BERT de taille "base" utilise 768, et BERT "large" utilise 1024.)
+    num_heads       = 1 #8    # Number of attention heads (d_model = 768 est num_heads = 12)
+    dff             = 1 #512  # Feed-forward network inner dimension. The larger the dimension of dff, the more complex nonlinear transformations the model can learn. (2048 et 4096)
     dropout_rate    = 0.1
     batch_size      = 64
-    epochs          = 200
+    epochs          = 2 #200
     warmup_rate     = 0.1
     es_patience_rate= 0.1
-    es_patience     = epochs * es_patience_rate
+    es_patience     = int(epochs * es_patience_rate)
     num_steps       = int(len(inputs_train) / batch_size)
     total_steps     = epochs * num_steps
     warmup_steps    = int(total_steps * warmup_rate)
     num_features    = outputs_train.shape[-1]
     
     # Implement id model
-    id = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_e{epochs}_esp{es_patience}_wu{warmup_steps}'.replace('.', ',')
-    save_path = save_path / id
+    id_ = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_e{epochs}_esp{es_patience}_wu{warmup_steps}'.replace('.', ',')
+    save_path = save_path / id_
     save_path.mkdir(parents=True, exist_ok=True)
 
     # Get datas bounds
@@ -245,6 +249,7 @@ if __name__ == '__main__':
                                         input_seq_len_max, target_seq_len_max, num_features,
                                         dropout_rate)
     transformer.summary()
+    transformer.print_layers()
 
     # Use the custom Noam learning rate schedule
     learning_rate = Noam(d_model, warmup_steps=warmup_steps)
@@ -258,32 +263,8 @@ if __name__ == '__main__':
                         ],
                         weighted_metrics=[DirectionalAccuracy(name='directional_accuracy')])
 
-    # Creating a start token for the decoder
-    start_token = tf.zeros((num_features,), dtype=tf.float32)
-
-    # Construction of the decoder input for training:
-    # For each sequence of the target, we prefix with a start token and we shift (we remove the last element)
-    decoder_input_train = tf.concat([
-        tf.broadcast_to(tf.expand_dims(start_token, 0), [tf.shape(outputs_train)[0], 1, num_features]),
-        outputs_train[:, :-1, :]
-    ], axis=1)
-    
-    # Construction of the decoder input for validation
-    decoder_input_val = tf.concat([
-        tf.broadcast_to(tf.expand_dims(start_token, 0), [tf.shape(outputs_val)[0], 1, num_features]),
-        outputs_val[:, :-1, :]
-    ], axis=1)
-    
-    
-    train_dataset = tf.data.Dataset.from_tensor_slices((
-        (np.array(inputs_train), np.array(decoder_input_train), {"encoder": np.array(inputs_mask_train), "decoder": np.array(outputs_mask_train)}),
-        np.array(outputs_train), np.array(outputs_mask_train)
-    )).batch(batch_size)
-
-    val_dataset = tf.data.Dataset.from_tensor_slices((
-        (np.array(inputs_val), np.array(decoder_input_val), {"encoder": np.array(inputs_mask_val), "decoder": np.array(outputs_mask_val)}),
-        np.array(outputs_val), np.array(outputs_mask_val)
-    )).batch(batch_size)
+    decoder_input_train = outputs_train
+    decoder_input_val = outputs_val
     
     callbacks = [
         # Stop training if the validation loss doesn't improve for 10 epochs
@@ -303,23 +284,44 @@ if __name__ == '__main__':
             verbose=1
         )
     ]
+    
+    x_train = {
+        'encoder_input':inputs_train, 
+        'decoder_input':decoder_input_train, 
+        'mask':{"encoder": inputs_mask_train, "decoder": outputs_mask_train}
+    }
+    x_val = {
+        'encoder_input':inputs_val, 
+        'decoder_input':decoder_input_val, 
+        'mask':{"encoder": inputs_mask_val, "decoder": outputs_mask_val}
+    }
+    dataset_train = tf.data.Dataset.from_tensor_slices((x_train, outputs_train, outputs_mask_train)).batch(batch_size).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_val = tf.data.Dataset.from_tensor_slices((x_val, outputs_val, outputs_mask_val)).batch(batch_size).prefetch(tf.data.experimental.AUTOTUNE)
+    
 
     # Training the model with training and validation data
     history = transformer.fit(
-        train_dataset,
-        validation_data=val_dataset,
+        dataset_train,
+        #sample_weight = np.array(outputs_mask_train),
+        validation_data=dataset_val,
         epochs=epochs, #200,
         callbacks=callbacks,
         verbose=2
     )
     
-    print('Evaluate')
+    print('Evaluate:')
     test_loss = transformer.evaluate(
-        x=(inputs_test, {'encoder': inputs_mask_test, 'decoder': outputs_mask_test }),
+        x={'encoder_input':inputs_test, 'mask':{'encoder': inputs_mask_test, 'decoder': outputs_mask_test }},
         y=outputs_test,
         batch_size=batch_size,
         verbose=1
     )
-
+    
+    print('Prediction:')
+    pred = transformer(encoder_input=inputs_test[0], mask={'encoder': inputs_mask_test[0], 'decoder': outputs_mask_test[0]})
+    print(pred)
+    
+    print('True:')
+    print(outputs_test[0])
     
     

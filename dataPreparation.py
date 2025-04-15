@@ -212,10 +212,10 @@ def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
     base.extend(list(similar_cols.values()))
     return base
     
-def main(n_candle_input_min = 5, n_candle_input_max = 100, 
-         n_candle_output_min = 1, n_candle_output_max = 5, 
-         step=None, size_coherence=True,  split_rates=[0.7, 0.15, 0.15],
-         indicators_to_add=['rsi', 'macd', 'bollinger'],
+def main(n_candle_input_min = 10, n_candle_input_max = 60, 
+         n_candle_output_min = 1, n_candle_output_max = 9, 
+         step=1, size_coherence=True,  split_rates=[0.9, 0.05, 0.05],
+         indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
          sep_file = '_'):
     """
         size_coherence if true, n candle output can't be greater than n candle input in the random
@@ -269,7 +269,7 @@ def main(n_candle_input_min = 5, n_candle_input_max = 100,
     inputs_mask_train, outputs_mask_train = sklearn.utils.shuffle(inputs_mask_train, outputs_mask_train)
     inputs_mask_val, outputs_mask_val = sklearn.utils.shuffle(inputs_mask_val, outputs_mask_val)
     inputs_mask_test, outputs_mask_test = sklearn.utils.shuffle(inputs_mask_test, outputs_mask_test)
-
+    
     # Save datas
     print('Save datas')
     datas_dict = {'inputs_train':inputs_train, 'inputs_val':inputs_val, 'inputs_test':inputs_test, 'outputs_train':outputs_train, 'outputs_val':outputs_val, 'outputs_test':outputs_test, 'inputs_mask_train':inputs_mask_train, 'inputs_mask_val':inputs_mask_val, 'inputs_mask_test':inputs_mask_test, 'outputs_mask_train':outputs_mask_train, 'outputs_mask_val':outputs_mask_val, 'outputs_mask_test':outputs_mask_test}
