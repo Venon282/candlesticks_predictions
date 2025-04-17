@@ -101,7 +101,7 @@ def transformDfsDictToDatasDict(dfs_dict, n_candle_input_min, n_candle_input_max
     # Define the number of candles for each data set
     datas_dict = {}
     
-    args_list = [(key, df,  n_candle_input_min, n_candle_input_max, n_candle_output_min, n_candle_output_max, size_coherence, step) for key, df in dfs_dict.items()]
+    args_list = [(key, df, n_candle_input_min, n_candle_input_max, n_candle_output_min, n_candle_output_max, size_coherence, step) for key, df in dfs_dict.items()]
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(transformDfsDictToDatasDictItem, args) for args in args_list]
@@ -214,7 +214,7 @@ def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
     
 def main(n_candle_input_min = 10, n_candle_input_max = 60, 
          n_candle_output_min = 1, n_candle_output_max = 9, 
-         step=1, size_coherence=True,  split_rates=[0.9, 0.05, 0.05],
+         step=30, size_coherence=True,  split_rates=[0.9, 0.05, 0.05],
          indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
          sep_file = '_'):
     """
@@ -263,12 +263,9 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
     scaler_path.mkdir(parents=True, exist_ok=True)
     inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test, inputs_mask_train, inputs_mask_val, inputs_mask_test, outputs_mask_train, outputs_mask_val, outputs_mask_test = scale(split_dict, cols_to_group_for_scale, columns_idx, path=scaler_path)
     
-    inputs_train, outputs_train = sklearn.utils.shuffle(inputs_train, outputs_train)
-    inputs_val, outputs_val = sklearn.utils.shuffle(inputs_val, outputs_val)
-    inputs_test, outputs_test = sklearn.utils.shuffle(inputs_test, outputs_test)
-    inputs_mask_train, outputs_mask_train = sklearn.utils.shuffle(inputs_mask_train, outputs_mask_train)
-    inputs_mask_val, outputs_mask_val = sklearn.utils.shuffle(inputs_mask_val, outputs_mask_val)
-    inputs_mask_test, outputs_mask_test = sklearn.utils.shuffle(inputs_mask_test, outputs_mask_test)
+    inputs_train, outputs_train, inputs_mask_train, outputs_mask_train = sklearn.utils.shuffle(inputs_train, outputs_train, inputs_mask_train, outputs_mask_train)
+    inputs_val, outputs_val, inputs_mask_val, outputs_mask_val = sklearn.utils.shuffle(inputs_val, outputs_val, inputs_mask_val, outputs_mask_val)
+    inputs_test, outputs_test, inputs_mask_test, outputs_mask_test = sklearn.utils.shuffle(inputs_test, outputs_test, inputs_mask_test, outputs_mask_test)
     
     # Save datas
     print('Save datas')
