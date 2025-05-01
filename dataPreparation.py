@@ -9,9 +9,10 @@ import numpy as np
 import joblib
 import random
 from tqdm import tqdm
+from tabulate import tabulate
 
 # internal
-from py_libraries.ml.preprocessing import MinMaxGlobalScaler, trainTestSplit
+from py_libraries.ml.preprocessing import StandardGlobalScaler, trainTestSplit
 from py_libraries.lst import flatten
 from TechnicalIndicators import TechnicalIndicators
 
@@ -137,30 +138,73 @@ def scale(split_dict, cols_to_group_for_scale, columns_idx, path):
     outputs_train, outputs_val, outputs_test = [], [], []
     inputs_mask_train, inputs_mask_val, inputs_mask_test = [], [], []
     outputs_mask_train, outputs_mask_val, outputs_mask_test = [], [], []
+    index = []
+    rows = {}
+    fake_candle = np.zeros(next(iter(split_dict.values()))['inputs']['train'][0].shape[1])  
     for key, values in tqdm(split_dict.items(), total=len(split_dict)):
         market = key.split('_')[0].lower()
-        for cols in cols_to_group_for_scale:
+        index.append(key)
+        for cols_to_group_idx, cols in enumerate(cols_to_group_for_scale):
             scaler_path = path / (market + '_' + '_'.join(cols) + '.pkl')
-            inputs_train_array = np.array(values['inputs']['train'])
-            outputs_train_array = np.array(values['outputs']['train'])
+            inputs_train_array = np.array(values['inputs']['train'])       # Shape: [N, T, D]
+            outputs_train_array = np.array(values['outputs']['train'])     # Shape: [N, T, D]
+            inputs_mask = np.array(values['inputs_mask']['train'])         # Shape: [N, T]
+            outputs_mask = np.array(values['outputs_mask']['train'])       # Shape: [N, T]
             cols_idx = [columns_idx[col] for col in cols]
             
             if not scaler_path.is_file():
-                scaler = MinMaxGlobalScaler()
+                scaler = StandardGlobalScaler()
                 scaler.fit([
-                    inputs_train_array[:, :, cols_idx],  # First 4 cols
-                    outputs_train_array[:, :, cols_idx]
+                    inputs_train_array[:, :, cols_idx][inputs_mask.astype(bool)],  # First 4 cols without the mask
+                    outputs_train_array[:, :, cols_idx][outputs_mask.astype(bool)]
                 ])
                 joblib.dump(scaler, scaler_path)
             else:
                 scaler = joblib.load(scaler_path)
-                
+            
+            mins, maxs, means, stds, counts = {}, {}, {}, {}, {}
             for entry, vals in values.items():
                 if 'mask' in entry:
                     continue
+                
                 for set_type, val in vals.items():
+                    mask = np.array(values[f"{entry}_mask"][set_type], bool)
                     values[entry][set_type] = transformData(val, scaler, cols_idx=cols_idx)
-  
+                    values[entry][set_type][~mask] = fake_candle
+                    
+                    if cols_to_group_idx == 0: # only for the price candles
+                        valid_vals = values[entry][set_type][:, :, cols_idx][mask]
+                        if set_type not in mins:
+                            mins    [set_type] = [np.min    (valid_vals)]
+                            maxs    [set_type] = [np.max    (valid_vals)]
+                            means   [set_type] = [np.mean   (valid_vals)]
+                            stds    [set_type] = [np.std    (valid_vals)]
+                            counts  [set_type] = [np.sum(mask)]
+                        else:
+                            mins    [set_type].append(np.min    (valid_vals))
+                            maxs    [set_type].append(np.max    (valid_vals))
+                            means   [set_type].append(np.mean   (valid_vals))
+                            stds    [set_type].append(np.std    (valid_vals))
+                            counts  [set_type].append(np.sum(mask))
+                        
+            if cols_to_group_idx == 0: # only for the price candles
+                for set_type in mins: # no need weight as all "entry" have the same size
+                    total_count = sum(counts[set_type])
+                    mean_weighted = np.sum([m * c for m, c in zip(means[set_type], counts[set_type])]) / total_count
+                    std_weighted = np.sqrt(np.sum([((s**2) * c) for s, c in zip(stds[set_type], counts[set_type])]) / total_count)
+                    if (set_type, 'min') not in rows:
+                        rows[(set_type, 'min')] = [min(mins[set_type])]
+                        rows[(set_type, 'max')] = [max(maxs[set_type])]
+                        rows[(set_type, 'mean')] = [mean_weighted]
+                        rows[(set_type, 'std')] = [std_weighted]
+                    else:
+                        rows[(set_type, 'min')].append(min(mins[set_type]))
+                        rows[(set_type, 'max')].append(max(maxs[set_type]))
+                        rows[(set_type, 'mean')].append(mean_weighted)
+                        rows[(set_type, 'std')].append(std_weighted)
+                        
+                    
+    
         inputs_train.extend(values['inputs']['train'])
         outputs_train.extend(values['outputs']['train'])
 
@@ -178,6 +222,8 @@ def scale(split_dict, cols_to_group_for_scale, columns_idx, path):
 
         inputs_mask_test.extend(values['inputs_mask']['test'])
         outputs_mask_test.extend(values['outputs_mask']['test'])
+    
+    print(pd.DataFrame(rows, index=index))
 
     return inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test, inputs_mask_train, inputs_mask_val, inputs_mask_test, outputs_mask_train, outputs_mask_val, outputs_mask_test
 
@@ -211,16 +257,61 @@ def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
 
     base.extend(list(similar_cols.values()))
     return base
+
+def displaySplit(split_dict):
+    column_names = pd.DataFrame([['inputs', '', 'train'],
+                             ['inputs', '', 'val'],
+                             ['inputs', '', 'test'],
+                             ['inputs', 'mask', 'train'],
+                             ['inputs', 'mask', 'val'],
+                             ['inputs', 'mask', 'test'],
+                             ['outputs', '', 'train'],
+                             ['outputs', '', 'val'],
+                             ['outputs', '', 'test'],
+                             ['outputs', 'mask', 'train'],
+                             ['outputs', 'mask', 'val'],
+                             ['outputs', 'mask', 'test']],
+                            columns=['Type', '', 'Set'])
+    rows = [[np.array(val['inputs']['train']).shape,
+             np.array(val['inputs']['val']).shape,
+             np.array(val['inputs']['test']).shape,
+             np.array(val['inputs_mask']['train']).shape,
+             np.array(val['inputs_mask']['val']).shape,
+             np.array(val['inputs_mask']['test']).shape,
+             np.array(val['outputs']['train']).shape,
+             np.array(val['outputs']['val']).shape,
+             np.array(val['outputs']['test']).shape,
+             np.array(val['outputs_mask']['train']).shape,
+             np.array(val['outputs_mask']['val']).shape,
+             np.array(val['outputs_mask']['test']).shape,
+             ] for val in split_dict.values()]
+    columns = pd.MultiIndex.from_frame(column_names)
+    iddex = list(split_dict.keys())
+    print(pd.DataFrame(rows, columns=columns, index=iddex))
     
-def main(n_candle_input_min = 40, n_candle_input_max = 40, 
-         n_candle_output_min = 1, n_candle_output_max = 1, 
-         step=None, size_coherence=True,  split_rates=[0.935, 0.05, 0.015],
-         indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
-         cols_to_drop=['date', 'time', 'tickvol', 'vol', 'spread'],
-         sep_file = '_', datas_path=r'E:\datas\gtw'):
+def saveAndDisplayDatas(datas_dict, save_path='./datas'):
+    columns = ['Shape', 'Min', 'Max', 'Mean', 'Std']
+    index_names = []
+    rows = []
+    for key, values in tqdm(datas_dict.items(), total=len(datas_dict)):
+        if len(values) > 0:
+            rows.append([np.array(values).shape, np.min(values), np.max(values), np.mean(values), np.std(values)])
+            key_split = key.split('_')
+            index_names.append([key_split[0], 'mask' if len(key_split) == 3 else '', key_split[-1]])
+            joblib.dump(np.array(values),save_path  / f'{key}.pkl')
+    index_names = pd.MultiIndex.from_frame(pd.DataFrame(index_names, columns=['Type', '', 'Set']))
+    print(pd.DataFrame(rows, columns=columns, index=index_names))
+    
+def main(n_candle_input_min = 10, n_candle_input_max = 60, 
+         n_candle_output_min = 1, n_candle_output_max = 6, 
+         step=10, size_coherence=True,  split_rates=[0.7, 0.15, 0.15],
+         indicators_to_add=['rsi', 'macd', 'bollinger'], 
+         cols_to_drop=['date', 'time'],
+         sep_file = '_', datas_path='./datas'):
     """
         size_coherence if true, n candle output can't be greater than n candle input in the random
     """
+    print('\n' + '-' * 20)
     datas_path = Path(datas_path)
     
     # Verify split rates
@@ -229,42 +320,46 @@ def main(n_candle_input_min = 40, n_candle_input_max = 40,
     
     # prepare split name folder
     split_str = sep_file.join(map(str, split_rates))
-    split_str = split_str.replace('0.', '')
+    split_str = split_str.replace('0.', '').replace('.', '')
     
     # prepare id name folder
-    id = f'({n_candle_input_min}-{n_candle_input_max}){sep_file}({n_candle_output_min}-{n_candle_output_max}){sep_file}step{step}{sep_file}sc{size_coherence}'
+    id = f'({n_candle_input_min}-{n_candle_input_max}){sep_file}({n_candle_output_min}-{n_candle_output_max}){sep_file}step={step}{sep_file}sc={size_coherence}'
     if len(indicators_to_add) > 0:
         id +=  sep_file + sep_file.join(indicators_to_add)
     if len(cols_to_drop) > 0:
         id += sep_file + 'drop(' + sep_file.join(cols_to_drop) + ')'
         
     print(f'{id=}')
+    print(f'{split_str=}')
         
     # Prepare datas set
-    print('Prepare datas set')
+    print('\nPrepare datas set')
     dfs_dict = dfsDict(datas_path / 'raw', sep=';', n_cols=9, cols_to_drop=cols_to_drop,
                        dtype={'<DATE>':str, '<TIME>':str, '<OPEN>':'float', '<HIGH>':'float', '<LOW>':'float', '<CLOSE>':'float', '<TICKVOL>':'int', '<VOL>':'int', '<SPREAD>':'int'})
     addIndicatorsToDataSets(dfs_dict, indicators_to_add = indicators_to_add) 
+    
     
     # Prepare similar columns to have the same/different scaler
     columns = list(dfs_dict.values())[0].columns.to_list()
     columns_idx = {col: i for i, col in enumerate(columns)}
     cols_to_group_for_scale = colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']])
     
-    print('Transform datas to sequences')
+    print('cols to group: ', cols_to_group_for_scale)
+    print('\n')
+    print(dfs_dict[next(iter(dfs_dict))].head(5))
+    
+    print('\nTransform datas to sequences')
     datas_dict = transformDfsDictToDatasDict(dfs_dict, n_candle_input_min, n_candle_input_max, 
                                                        n_candle_output_min, n_candle_output_max,
                                                        size_coherence=size_coherence, step=step,
                                                        max_workers=2)
 
-    print('Split datas set')
+    print('\nSplit datas set')
     split_dict = splitDict(datas_dict, train=split_rates[0], val=split_rates[1], test=split_rates[2])
-
-    # Datas quantity check
-    print(*(f'{key}, {ke}, {k}, {np.array(v).shape}' for key, val in split_dict.items() for ke, val in val.items() for k, v in val.items()), sep='\n')
+    displaySplit(split_dict)
     
     # Scale and prepare datas
-    print('Scaler and Shuffle datas set')
+    print('\nScaler and Shuffle datas set')
     scaler_path = datas_path / f'scaler/{id}/{split_str}'
     scaler_path.mkdir(parents=True, exist_ok=True)
     inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test, inputs_mask_train, inputs_mask_val, inputs_mask_test, outputs_mask_train, outputs_mask_val, outputs_mask_test = scale(split_dict, cols_to_group_for_scale, columns_idx, path=scaler_path)
@@ -274,20 +369,30 @@ def main(n_candle_input_min = 40, n_candle_input_max = 40,
     inputs_test, outputs_test, inputs_mask_test, outputs_mask_test = sklearn.utils.shuffle(inputs_test, outputs_test, inputs_mask_test, outputs_mask_test)
     
     # Save datas
-    print('Save datas')
+    print('\nSave datas')
     datas_dict = {'inputs_train':inputs_train, 'inputs_val':inputs_val, 'inputs_test':inputs_test, 'outputs_train':outputs_train, 'outputs_val':outputs_val, 'outputs_test':outputs_test, 'inputs_mask_train':inputs_mask_train, 'inputs_mask_val':inputs_mask_val, 'inputs_mask_test':inputs_mask_test, 'outputs_mask_train':outputs_mask_train, 'outputs_mask_val':outputs_mask_val, 'outputs_mask_test':outputs_mask_test}
     save_path = datas_path / f'split/{id}/{split_str}'
     save_path.mkdir(parents=True, exist_ok=True)
-    resum = ''
-    for key, values in tqdm(datas_dict.items(), total=len(datas_dict)):
-        if len(values) > 0:
-            resum += f'{key}, {np.array(values).shape}, {np.min(values)}, {np.max(values)}\n'
-            joblib.dump(np.array(values),save_path  / f'{key}.pkl')
-    print(resum)
+    saveAndDisplayDatas(datas_dict, save_path=save_path)
+  
+    
+ 
 
 
 
 if __name__ == '__main__':
     start_time = time.time()
-    main()
-    print(f'Time: {time.time() - start_time}ms')
+    main(
+            n_candle_input_min = 40, 
+            n_candle_input_max = 40, 
+            n_candle_output_min = 1, 
+            n_candle_output_max = 1, 
+            step=1, 
+            size_coherence=True,  
+            split_rates=[0.935, 0.05, 0.015],
+            indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
+            cols_to_drop=['date', 'time', 'tickvol', 'vol', 'spread'],
+            sep_file = '_', 
+            datas_path=r'E:\csp'
+        )
+    print(f'Time: {time.time() - start_time}s')
