@@ -1,317 +1,32 @@
 import time
 import pandas as pd
 from pathlib import Path
-import re
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import sklearn
-from sklearn.model_selection import train_test_split
+
 import numpy as np
 import joblib
-import random
+
 from tqdm import tqdm
-from tabulate import tabulate
 
 # internal
-from py_libraries.ml.preprocessing import StandardGlobalScaler, trainTestSplit
-from py_libraries.lst import flatten
-from TechnicalIndicators import TechnicalIndicators
-
-def dfsDict(path, sep=',', encoding='utf-8-sig', n_cols=None, cols_to_drop=None, dtype=None):
-    dfs_dict = {}
-    files_path = list(Path(path).glob('*.csv'))
-    for file_path in tqdm(files_path, total=len(files_path)):
-
-        df = pd.read_csv(file_path, sep=sep, encoding=encoding, dtype=str)
-        if n_cols is None:
-            n_cols = len(df)
-        
-        if len(df.columns) != n_cols:
-            for separator in (r'\t', '  ', ',', ';'):
-                df = pd.read_csv(file_path, encoding=encoding, sep=separator, on_bad_lines='skip')
-                if len(df.columns) == n_cols:
-                    df.to_csv(file_path, sep=sep, index=False)
-                    break
-            else:
-                raise ValueError(f'{file_path.stem} have {len(df.columns)} cols instead of {n_cols}')
-        dfs_dict[file_path.stem] = improveDf(df, dtype, cols_to_drop=cols_to_drop)
-    return dfs_dict
-
-def improveDf(df, dtype, cols_to_drop=['date', 'time']):
-
-    df.rename(columns=lambda x: re.sub(r'[<>]','',x.lower()), inplace=True)
-    df.drop(cols_to_drop, axis=1, inplace=True)
-    df = df.map(lambda x: x.replace(',', '.') if isinstance(x, str) else x)
-    obj_cols = df.select_dtypes(include=['object']).columns
-    df[obj_cols] = df[obj_cols].astype(float)
-    if dtype is not None:
-        df = df.astype({key: value for key, value in dtype.items() if key in df} )
-   
-    return df
+from data_preparation.prepareDataSet import prepareDataSet
+from data_preparation.handleColumns import handleColumns
+from data_preparation.dfsDtToDatas import dfsDtToDatas
+from data_preparation.splitDataSet import splitDataSet
+from data_preparation.scaleAndShuffle import scaleAndShuffle
+from data_preparation.saveDatas import saveDatas
 
 
-def sequence(datas, n_candle_input_min, n_candle_input_max, n_candle_output_min, n_candle_output_max, size_coherence=True, step=None):
-    """
-    Attribute dinamically the number of candles for the input and output
-    """ 
-    data = datas.values # Convert DataFrame to a NumPy array for efficient slicing
-    # Create sequences
-    step = n_candle_input_max + n_candle_output_max if step is None else step    
-    fake_candle = np.zeros(datas.shape[1])                   
-    x, y, mask_x, mask_y = [], [], [], []
-    i = 0
-    while i < len(datas) - n_candle_input_min - n_candle_output_min:                                # While we can create a sequence
-        margin = len(datas) - i                                                                     # Remaining candles
-        
-        # Determine the number of input candles
-        input_max = min(n_candle_input_max, margin - n_candle_output_min)                           # Maximum number of candles for the input
-        n_candle_input = random.randint(n_candle_input_min, input_max)                              # Random number of candles for the input   
-        n_fake_candle_input = n_candle_input_max - n_candle_input                                   # Number of fake candles to add to the input                   
-        
-        # Determine the number of output candles
-        output_max = min(n_candle_output_max, margin - n_candle_input)
-        if size_coherence:
-            n_candle_output = random.randint(n_candle_output_min, min(n_candle_input, output_max))
-        else:
-            n_candle_output = random.randint(n_candle_output_min, output_max)
-        n_fake_candle_output = n_candle_output_max - n_candle_output                                # Number of fake candles to add to the output
-        
-        step_current = n_candle_input + n_candle_output if step is None else step  
-        
-        x_sequence = np.concatenate((np.tile(fake_candle, (n_fake_candle_input, 1)), data[i: i + n_candle_input]))
-        y_sequence = np.concatenate((data[i + n_candle_input: i + n_candle_input + n_candle_output], np.tile(fake_candle, (n_fake_candle_output, 1))))
-        mask_x_sequence = np.concatenate((np.zeros(n_fake_candle_input), np.ones(n_candle_input)))
-        mask_y_sequence = np.concatenate((np.ones(n_candle_output), np.zeros(n_fake_candle_output)))  
-        mask_x.append(mask_x_sequence)
-        mask_y.append(mask_y_sequence)    
-        x.append(x_sequence)
-        y.append(y_sequence)
-        
-        i += step_current
 
-    return x, y, mask_x, mask_y
-
-def transformDfsDictToDatasDictItem(args):
-    key, df, n_candle_input_min, n_candle_input_max, n_candle_output_min, n_candle_output_max, size_coherence, step = args
-    inputs, outputs, inputs_mask, outputs_mask = sequence(df,  n_candle_input_min, n_candle_input_max, n_candle_output_min, n_candle_output_max, size_coherence=size_coherence, step=step)
-    return key, {'inputs':inputs, 'outputs':outputs, 'inputs_mask':inputs_mask, 'outputs_mask':outputs_mask}
-
-def transformDfsDictToDatasDict(dfs_dict, n_candle_input_min, n_candle_input_max, 
-                                        n_candle_output_min, n_candle_output_max,
-                                        size_coherence=True, step=None, 
-                                        max_workers=None):
-    # Define the number of candles for each data set
-    datas_dict = {}
-    
-    args_list = [(key, df, n_candle_input_min, n_candle_input_max, n_candle_output_min, n_candle_output_max, size_coherence, step) for key, df in dfs_dict.items()]
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(transformDfsDictToDatasDictItem, args) for args in args_list]
-
-        total_jobs = len(args_list)
-        for future in tqdm(as_completed(futures), total=total_jobs):
-            key, data = future.result()
-            datas_dict[key] = data
-
-    return datas_dict
-
-def splitDict(datas_dict, train=0.7, val=0.15, test=0.15, seed=42):
-    split_dict = {}
-    for key, values in tqdm(datas_dict.items(), total=len(datas_dict)):
-        
-        inputs_train, inputs_temp, outputs_train, outputs_temp, inputs_mask_train, inputs_mask_temp, outputs_mask_train, outputs_mask_temp = trainTestSplit(values['inputs'], values['outputs'], values['inputs_mask'], values['outputs_mask'], test_size=val+test, random_state=seed)
-        inputs_val, inputs_test, outputs_val, outputs_test, inputs_mask_val, inputs_mask_test, outputs_mask_val, outputs_mask_test = trainTestSplit(inputs_temp, outputs_temp, inputs_mask_temp, outputs_mask_temp, test_size=test / (val+test), random_state=seed)
-        split_dict[key] = {'inputs':{'train':inputs_train, 'val':inputs_val, 'test':inputs_test},
-                           'outputs':{'train':outputs_train, 'val':outputs_val, 'test':outputs_test},
-                           'inputs_mask':{'train':inputs_mask_train, 'val':inputs_mask_val, 'test':inputs_mask_test},
-                           'outputs_mask':{'train':outputs_mask_train, 'val':outputs_mask_val, 'test':outputs_mask_test}}
-    return split_dict
-
-def scale(split_dict, cols_to_group_for_scale, columns_idx, path):
-    def transformData(values, scaler, cols_idx):
-        """Apply the respective scaler to each slice and concatenate"""
-        values = np.array(values)  # Ensure conversion
-        if len(values) > 0:
-            values[:, :, cols_idx] = scaler.transform(values[:, :, cols_idx])
-        return values
-    path = Path(path)
-    inputs_train, inputs_val, inputs_test = [], [], []
-    outputs_train, outputs_val, outputs_test = [], [], []
-    inputs_mask_train, inputs_mask_val, inputs_mask_test = [], [], []
-    outputs_mask_train, outputs_mask_val, outputs_mask_test = [], [], []
-    index = []
-    rows = {}
-    fake_candle = np.zeros(next(iter(split_dict.values()))['inputs']['train'][0].shape[1])  
-    for key, values in tqdm(split_dict.items(), total=len(split_dict)):
-        market = key.split('_')[0].lower()
-        index.append(key)
-        for cols_to_group_idx, cols in enumerate(cols_to_group_for_scale):
-            scaler_path = path / (market + '_' + '_'.join(cols) + '.pkl')
-            inputs_train_array = np.array(values['inputs']['train'])       # Shape: [N, T, D]
-            outputs_train_array = np.array(values['outputs']['train'])     # Shape: [N, T, D]
-            inputs_mask = np.array(values['inputs_mask']['train'])         # Shape: [N, T]
-            outputs_mask = np.array(values['outputs_mask']['train'])       # Shape: [N, T]
-            cols_idx = [columns_idx[col] for col in cols]
-            
-            if not scaler_path.is_file():
-                scaler = StandardGlobalScaler()
-                scaler.fit([
-                    inputs_train_array[:, :, cols_idx][inputs_mask.astype(bool)],  # First 4 cols without the mask
-                    outputs_train_array[:, :, cols_idx][outputs_mask.astype(bool)]
-                ])
-                joblib.dump(scaler, scaler_path)
-            else:
-                scaler = joblib.load(scaler_path)
-            
-            mins, maxs, means, stds, counts = {}, {}, {}, {}, {}
-            for entry, vals in values.items():
-                if 'mask' in entry:
-                    continue
-                
-                for set_type, val in vals.items():
-                    mask = np.array(values[f"{entry}_mask"][set_type], bool)
-                    values[entry][set_type] = transformData(val, scaler, cols_idx=cols_idx)
-                    values[entry][set_type][~mask] = fake_candle
-                    
-                    if cols_to_group_idx == 0: # only for the price candles
-                        valid_vals = values[entry][set_type][:, :, cols_idx][mask]
-                        if set_type not in mins:
-                            mins    [set_type] = [np.min    (valid_vals)]
-                            maxs    [set_type] = [np.max    (valid_vals)]
-                            means   [set_type] = [np.mean   (valid_vals)]
-                            stds    [set_type] = [np.std    (valid_vals)]
-                            counts  [set_type] = [np.sum(mask)]
-                        else:
-                            mins    [set_type].append(np.min    (valid_vals))
-                            maxs    [set_type].append(np.max    (valid_vals))
-                            means   [set_type].append(np.mean   (valid_vals))
-                            stds    [set_type].append(np.std    (valid_vals))
-                            counts  [set_type].append(np.sum(mask))
-                        
-            if cols_to_group_idx == 0: # only for the price candles
-                for set_type in mins: # no need weight as all "entry" have the same size
-                    total_count = sum(counts[set_type])
-                    mean_weighted = np.sum([m * c for m, c in zip(means[set_type], counts[set_type])]) / total_count
-                    std_weighted = np.sqrt(np.sum([((s**2) * c) for s, c in zip(stds[set_type], counts[set_type])]) / total_count)
-                    if (set_type, 'min') not in rows:
-                        rows[(set_type, 'min')] = [min(mins[set_type])]
-                        rows[(set_type, 'max')] = [max(maxs[set_type])]
-                        rows[(set_type, 'mean')] = [mean_weighted]
-                        rows[(set_type, 'std')] = [std_weighted]
-                    else:
-                        rows[(set_type, 'min')].append(min(mins[set_type]))
-                        rows[(set_type, 'max')].append(max(maxs[set_type]))
-                        rows[(set_type, 'mean')].append(mean_weighted)
-                        rows[(set_type, 'std')].append(std_weighted)
-                        
-                    
-    
-        inputs_train.extend(values['inputs']['train'])
-        outputs_train.extend(values['outputs']['train'])
-
-        inputs_val.extend(values['inputs']['val'])
-        outputs_val.extend(values['outputs']['val'])
-
-        inputs_test.extend(values['inputs']['test'])
-        outputs_test.extend(values['outputs']['test'])
-        
-        inputs_mask_train.extend(values['inputs_mask']['train'])
-        outputs_mask_train.extend(values['outputs_mask']['train'])
-
-        inputs_mask_val.extend(values['inputs_mask']['val'])
-        outputs_mask_val.extend(values['outputs_mask']['val'])
-
-        inputs_mask_test.extend(values['inputs_mask']['test'])
-        outputs_mask_test.extend(values['outputs_mask']['test'])
-    
-    print(pd.DataFrame(rows, index=index))
-
-    return inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test, inputs_mask_train, inputs_mask_val, inputs_mask_test, outputs_mask_train, outputs_mask_val, outputs_mask_test
-
-def dfFirstValidIndex(df):
-    first_valid_index = 0
-    for col_name, data in df.items():
-        first_valid_index = max(first_valid_index, data.first_valid_index())
-    return first_valid_index
-
-def addIndicatorsToDataSets(dfs_dict, indicators_to_add=None, params=None):
-    tech_ind = TechnicalIndicators(indicators=indicators_to_add, params=params)
-    for key, df in dfs_dict.items():
-        tech_ind.add_indicators(df, inplace=True)
-        
-        # remove firsts indexs with nan. Insure not nan drop in the middle of the data set.
-        first_idx = dfFirstValidIndex(df)
-        dfs_dict[key] = df.loc[first_idx:].reset_index(drop=True)
-        
-def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
-    similar_cols = {}
-    base_flatten = flatten(base)
-
-    for col in columns:
-        if col in base_flatten:
-            continue
-        head = col.split('_')[0]
-        if head in similar_cols:
-            similar_cols[head].append(col)
-        else:
-            similar_cols[head] = [col]
-
-    base.extend(list(similar_cols.values()))
-    return base
-
-def displaySplit(split_dict):
-    column_names = pd.DataFrame([['inputs', '', 'train'],
-                             ['inputs', '', 'val'],
-                             ['inputs', '', 'test'],
-                             ['inputs', 'mask', 'train'],
-                             ['inputs', 'mask', 'val'],
-                             ['inputs', 'mask', 'test'],
-                             ['outputs', '', 'train'],
-                             ['outputs', '', 'val'],
-                             ['outputs', '', 'test'],
-                             ['outputs', 'mask', 'train'],
-                             ['outputs', 'mask', 'val'],
-                             ['outputs', 'mask', 'test']],
-                            columns=['Type', '', 'Set'])
-    rows = [[np.array(val['inputs']['train']).shape,
-             np.array(val['inputs']['val']).shape,
-             np.array(val['inputs']['test']).shape,
-             np.array(val['inputs_mask']['train']).shape,
-             np.array(val['inputs_mask']['val']).shape,
-             np.array(val['inputs_mask']['test']).shape,
-             np.array(val['outputs']['train']).shape,
-             np.array(val['outputs']['val']).shape,
-             np.array(val['outputs']['test']).shape,
-             np.array(val['outputs_mask']['train']).shape,
-             np.array(val['outputs_mask']['val']).shape,
-             np.array(val['outputs_mask']['test']).shape,
-             ] for val in split_dict.values()]
-    columns = pd.MultiIndex.from_frame(column_names)
-    iddex = list(split_dict.keys())
-    print(pd.DataFrame(rows, columns=columns, index=iddex))
-    
-def saveAndDisplayDatas(datas_dict, save_path='./datas'):
-    columns = ['Shape', 'Min', 'Max', 'Mean', 'Std']
-    index_names = []
-    rows = []
-    for key, values in tqdm(datas_dict.items(), total=len(datas_dict)):
-        if len(values) > 0:
-            rows.append([np.array(values).shape, np.min(values), np.max(values), np.mean(values), np.std(values)])
-            key_split = key.split('_')
-            index_names.append([key_split[0], 'mask' if len(key_split) == 3 else '', key_split[-1]])
-            joblib.dump(np.array(values),save_path  / f'{key}.pkl')
-    index_names = pd.MultiIndex.from_frame(pd.DataFrame(index_names, columns=['Type', '', 'Set']))
-    print(pd.DataFrame(rows, columns=columns, index=index_names))
     
 def main(n_candle_input_min = 10, n_candle_input_max = 60, 
          n_candle_output_min = 1, n_candle_output_max = 6, 
          step=10, size_coherence=True,  split_rates=[0.7, 0.15, 0.15],
          indicators_to_add=['rsi', 'macd', 'bollinger'], 
          cols_to_drop=['date', 'time'],
-         sep_file = '_', datas_path='./datas'):
+         sep_file = '_', datas_path='./datas', seed=42):
     """
         size_coherence if true, n candle output can't be greater than n candle input in the random
     """
-    print('\n' + '-' * 20)
     datas_path = Path(datas_path)
     
     # Verify split rates
@@ -332,67 +47,42 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
     print(f'{id=}')
     print(f'{split_str=}')
         
-    # Prepare datas set
-    print('\nPrepare datas set')
-    dfs_dict = dfsDict(datas_path / 'raw', sep=';', n_cols=9, cols_to_drop=cols_to_drop,
-                       dtype={'<DATE>':str, '<TIME>':str, '<OPEN>':'float', '<HIGH>':'float', '<LOW>':'float', '<CLOSE>':'float', '<TICKVOL>':'int', '<VOL>':'int', '<SPREAD>':'int'})
-    addIndicatorsToDataSets(dfs_dict, indicators_to_add = indicators_to_add) 
+    #todo add the parameters for the technical indicators
+    dfs_dict = prepareDataSet(datas_path, cols_to_drop, indicators_to_add)
     
+    columns, columns_idx, cols_to_group_for_scale = handleColumns(dfs_dict)
     
-    # Prepare similar columns to have the same/different scaler
-    columns = list(dfs_dict.values())[0].columns.to_list()
-    columns_idx = {col: i for i, col in enumerate(columns)}
-    cols_to_group_for_scale = colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']])
-    
-    print('cols to group: ', cols_to_group_for_scale)
-    print('\n')
-    print(dfs_dict[next(iter(dfs_dict))].head(5))
-    
-    print('\nTransform datas to sequences')
-    datas_dict = transformDfsDictToDatasDict(dfs_dict, n_candle_input_min, n_candle_input_max, 
+    datas_dict = dfsDtToDatas(dfs_dict, n_candle_input_min, n_candle_input_max, 
                                                        n_candle_output_min, n_candle_output_max,
                                                        size_coherence=size_coherence, step=step,
-                                                       max_workers=2)
-
-    print('\nSplit datas set')
-    split_dict = splitDict(datas_dict, train=split_rates[0], val=split_rates[1], test=split_rates[2])
-    displaySplit(split_dict)
+                                                       max_workers=4)
     
-    # Scale and prepare datas
-    print('\nScaler and Shuffle datas set')
-    scaler_path = datas_path / f'scaler/{id}/{split_str}'
-    scaler_path.mkdir(parents=True, exist_ok=True)
-    inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test, inputs_mask_train, inputs_mask_val, inputs_mask_test, outputs_mask_train, outputs_mask_val, outputs_mask_test = scale(split_dict, cols_to_group_for_scale, columns_idx, path=scaler_path)
+    split_dict = splitDataSet(datas_dict, split_rates, seed=seed)
     
-    inputs_train, outputs_train, inputs_mask_train, outputs_mask_train = sklearn.utils.shuffle(inputs_train, outputs_train, inputs_mask_train, outputs_mask_train)
-    inputs_val, outputs_val, inputs_mask_val, outputs_mask_val = sklearn.utils.shuffle(inputs_val, outputs_val, inputs_mask_val, outputs_mask_val)
-    inputs_test, outputs_test, inputs_mask_test, outputs_mask_test = sklearn.utils.shuffle(inputs_test, outputs_test, inputs_mask_test, outputs_mask_test)
-    
-    # Save datas
-    print('\nSave datas')
-    datas_dict = {'inputs_train':inputs_train, 'inputs_val':inputs_val, 'inputs_test':inputs_test, 'outputs_train':outputs_train, 'outputs_val':outputs_val, 'outputs_test':outputs_test, 'inputs_mask_train':inputs_mask_train, 'inputs_mask_val':inputs_mask_val, 'inputs_mask_test':inputs_mask_test, 'outputs_mask_train':outputs_mask_train, 'outputs_mask_val':outputs_mask_val, 'outputs_mask_test':outputs_mask_test}
-    save_path = datas_path / f'split/{id}/{split_str}'
-    save_path.mkdir(parents=True, exist_ok=True)
-    saveAndDisplayDatas(datas_dict, save_path=save_path)
-  
-    
- 
-
-
+    datas_dict = scaleAndShuffle(datas_path, id, split_str, split_dict, cols_to_group_for_scale, columns_idx, seed=seed)
+    saveDatas(datas_path, id, split_str, datas_dict)
 
 if __name__ == '__main__':
     start_time = time.time()
-    main(
-            n_candle_input_min = 40, 
-            n_candle_input_max = 40, 
-            n_candle_output_min = 1, 
-            n_candle_output_max = 1, 
-            step=1, 
-            size_coherence=True,  
-            split_rates=[0.935, 0.05, 0.015],
-            indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
-            cols_to_drop=['date', 'time', 'tickvol', 'vol', 'spread'],
-            sep_file = '_', 
-            datas_path=r'E:\csp'
-        )
+    for cols_to_drop in [
+                            ['date', 'time', 'tickvol', 'vol', 'spread'],
+                            ['date', 'time', 'tickvol', 'vol'],
+                            ['date', 'time', 'tickvol', 'spread'],
+                            ['date', 'time',  'vol', 'spread'],
+                        ]:
+        
+        main(
+                n_candle_input_min = 40, 
+                n_candle_input_max = 40, 
+                n_candle_output_min = 1, 
+                n_candle_output_max = 1, 
+                step=1, 
+                size_coherence=True,  
+                split_rates=[0.935, 0.05, 0.015],
+                indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
+                cols_to_drop=cols_to_drop,
+                sep_file = '_', 
+                datas_path=r'E:\csp',
+                seed=42
+            )
     print(f'Time: {time.time() - start_time}s')
