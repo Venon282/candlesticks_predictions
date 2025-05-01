@@ -15,43 +15,82 @@ import joblib
 from py_libraries.ml.model import TransformerForecaster
 from py_libraries.ml.optimizer.schedule import Noam
 
+# @tf.keras.utils.register_keras_serializable()
+# class DirectionalAccuracy(tf.keras.metrics.Metric):
+#     def __init__(self, name='directional_accuracy', **kwargs):
+#         super(DirectionalAccuracy, self).__init__(name=name, **kwargs)
+#         self.total = self.add_weight(name='total', initializer='zeros', dtype=tf.float32)
+#         self.correct = self.add_weight(name='correct', initializer='zeros', dtype=tf.float32)
+    
+#     def update_state(self, y_true, y_pred, sample_weight=None):
+#         # Extract the close price (assuming 4th feature: index 3)
+#         y_true_close = tf.cast(y_true[..., 3], tf.float32)
+#         y_pred_close = tf.cast(y_pred[..., 3], tf.float32)
+#         # Calculate differences between consecutive time steps along axis=1 (time axis)
+#         y_true_diff = y_true_close[:, 1:] - y_true_close[:, :-1]
+#         y_pred_diff = y_pred_close[:, 1:] - y_pred_close[:, :-1]
+#         # Compute the sign (direction) of these differences
+#         y_true_sign = tf.math.sign(y_true_diff)
+#         y_pred_sign = tf.math.sign(y_pred_diff)
+#         # Compare directional predictions: correct if both signs are equal
+#         correct = tf.cast(tf.equal(y_true_sign, y_pred_sign), tf.float32)
+#         # Update the counts
+#         if sample_weight is not None:
+#             # Ensure sample_weight is cast to correct type and adjust shape: drop first timestep.
+#             sample_weight = tf.cast(sample_weight, correct.dtype)
+#             sample_weight = sample_weight[:, 1:]
+#             correct *= sample_weight
+#             self.total.assign_add(tf.reduce_sum(sample_weight))
+#         else:
+#             self.total.assign_add(tf.cast(tf.size(correct), tf.float32))
+            
+#         self.correct.assign_add(tf.reduce_sum(correct))
+    
+#     def result(self):
+#         return tf.math.divide_no_nan(self.correct, self.total)
+    
+#     def reset_states(self):
+#         self.correct.assign(0.0)
+#         self.total.assign(0.0)
+
 @tf.keras.utils.register_keras_serializable()
 class DirectionalAccuracy(tf.keras.metrics.Metric):
-    def __init__(self, name='directional_accuracy', **kwargs):
-        super(DirectionalAccuracy, self).__init__(name=name, **kwargs)
-        self.total = self.add_weight(name='total', initializer='zeros', dtype=tf.float32)
+    def __init__(self, name='candle_direction_accuracy', **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.total   = self.add_weight(name='total',   initializer='zeros', dtype=tf.float32)
         self.correct = self.add_weight(name='correct', initializer='zeros', dtype=tf.float32)
-    
+
     def update_state(self, y_true, y_pred, sample_weight=None):
-        # Extract the close price (assuming 4th feature: index 3)
-        y_true_close = tf.cast(y_true[..., 3], tf.float32)
-        y_pred_close = tf.cast(y_pred[..., 3], tf.float32)
-        # Calculate differences between consecutive time steps along axis=1 (time axis)
-        y_true_diff = y_true_close[:, 1:] - y_true_close[:, :-1]
-        y_pred_diff = y_pred_close[:, 1:] - y_pred_close[:, :-1]
-        # Compute the sign (direction) of these differences
-        y_true_sign = tf.math.sign(y_true_diff)
-        y_pred_sign = tf.math.sign(y_pred_diff)
-        # Compare directional predictions: correct if both signs are equal
-        correct = tf.cast(tf.equal(y_true_sign, y_pred_sign), tf.float32)
-        # Update the counts
+        # assume feature 0 = open, feature 3 = close
+        true_open  = tf.cast(y_true[..., 0], tf.float32)
+        true_close = tf.cast(y_true[..., 3], tf.float32)
+        pred_open  = tf.cast(y_pred[..., 0], tf.float32)
+        pred_close = tf.cast(y_pred[..., 3], tf.float32)
+
+        # +1 => bullish, -1 => bearish (0 => flat candle, counts as mismatch by default)
+        true_dir = tf.sign(true_close - true_open)
+        pred_dir = tf.sign(pred_close - pred_open)
+
+        # compare across all batch × time steps
+        correct = tf.cast(tf.equal(true_dir, pred_dir), tf.float32)
+
         if sample_weight is not None:
-            # Ensure sample_weight is cast to correct type and adjust shape: drop first timestep.
             sample_weight = tf.cast(sample_weight, correct.dtype)
-            sample_weight = sample_weight[:, 1:]
+            # broadcast/resize if necessary:
+            #sample_weight = tf.broadcast_to(sample_weight, tf.shape(correct))
             correct *= sample_weight
             self.total.assign_add(tf.reduce_sum(sample_weight))
         else:
             self.total.assign_add(tf.cast(tf.size(correct), tf.float32))
-            
+
         self.correct.assign_add(tf.reduce_sum(correct))
-    
+
     def result(self):
         return tf.math.divide_no_nan(self.correct, self.total)
-    
+
     def reset_states(self):
-        self.correct.assign(0.0)
-        self.total.assign(0.0)
+        self.total.assign(0.)
+        self.correct.assign(0.)
 
 @tf.keras.utils.register_keras_serializable()
 class CustomCandleLoss(tf.keras.losses.Loss):
@@ -167,9 +206,9 @@ class CustomCandleLoss(tf.keras.losses.Loss):
 
 if __name__ == '__main__':
     save_folder_path = Path(r'./saved_model')
-    split_folder_path = Path(r'./datas/split')
-    split_datas_str = '(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger'
-    split_str = '7_15_15'
+    split_folder_path = Path(r'E:\datas\gtw\split')
+    split_datas_str = '(40-40)_(1-1)_stepNone_scTrue_drop(date_time_tickvol_vol_spread)' #'(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger'
+    split_str = '935_05_015' # '7_15_15'
     model_file_name = 'transformer.keras'
     
     split_path = split_folder_path / split_datas_str / split_str
@@ -304,7 +343,7 @@ if __name__ == '__main__':
         dataset_train,
         #sample_weight = np.array(outputs_mask_train),
         validation_data=dataset_val,
-        epochs=epochs, #200,
+        epochs=epochs, 
         callbacks=callbacks,
         verbose=2
     )
@@ -316,6 +355,9 @@ if __name__ == '__main__':
         batch_size=batch_size,
         verbose=1
     )
+    
+    print('Decoder output')
+    print(outputs_mask_test[0])
     
     print('Prediction:')
     pred = transformer(encoder_input=inputs_test[0], mask={'encoder': inputs_mask_test[0], 'decoder': outputs_mask_test[0]})

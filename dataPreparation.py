@@ -15,7 +15,7 @@ from py_libraries.ml.preprocessing import MinMaxGlobalScaler, trainTestSplit
 from py_libraries.lst import flatten
 from TechnicalIndicators import TechnicalIndicators
 
-def dfsDict(path, sep=',', encoding='utf-8-sig', n_cols=None, dtype=None):
+def dfsDict(path, sep=',', encoding='utf-8-sig', n_cols=None, cols_to_drop=None, dtype=None):
     dfs_dict = {}
     files_path = list(Path(path).glob('*.csv'))
     for file_path in tqdm(files_path, total=len(files_path)):
@@ -32,18 +32,18 @@ def dfsDict(path, sep=',', encoding='utf-8-sig', n_cols=None, dtype=None):
                     break
             else:
                 raise ValueError(f'{file_path.stem} have {len(df.columns)} cols instead of {n_cols}')
-        dfs_dict[file_path.stem] = improveDf(df, dtype)
+        dfs_dict[file_path.stem] = improveDf(df, dtype, cols_to_drop=cols_to_drop)
     return dfs_dict
 
-def improveDf(df, dtype, cols_to_drop=['<DATE>', '<TIME>']):
+def improveDf(df, dtype, cols_to_drop=['date', 'time']):
 
+    df.rename(columns=lambda x: re.sub(r'[<>]','',x.lower()), inplace=True)
     df.drop(cols_to_drop, axis=1, inplace=True)
     df = df.map(lambda x: x.replace(',', '.') if isinstance(x, str) else x)
     obj_cols = df.select_dtypes(include=['object']).columns
     df[obj_cols] = df[obj_cols].astype(float)
     if dtype is not None:
         df = df.astype({key: value for key, value in dtype.items() if key in df} )
-    df.rename(columns=lambda x: re.sub(r'[<>]','',x.lower()), inplace=True)
    
     return df
 
@@ -212,14 +212,16 @@ def colsToGroupForScale(columns, base=[['open', 'high', 'low', 'close']]):
     base.extend(list(similar_cols.values()))
     return base
     
-def main(n_candle_input_min = 10, n_candle_input_max = 60, 
-         n_candle_output_min = 1, n_candle_output_max = 9, 
-         step=30, size_coherence=True,  split_rates=[0.9, 0.05, 0.05],
+def main(n_candle_input_min = 40, n_candle_input_max = 40, 
+         n_candle_output_min = 1, n_candle_output_max = 1, 
+         step=None, size_coherence=True,  split_rates=[0.935, 0.05, 0.015],
          indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
-         sep_file = '_'):
+         cols_to_drop=['date', 'time', 'tickvol', 'vol', 'spread'],
+         sep_file = '_', datas_path=r'E:\datas\gtw'):
     """
         size_coherence if true, n candle output can't be greater than n candle input in the random
     """
+    datas_path = Path(datas_path)
     
     # Verify split rates
     if not np.isclose(sum(split_rates), 1.0):
@@ -233,10 +235,14 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
     id = f'({n_candle_input_min}-{n_candle_input_max}){sep_file}({n_candle_output_min}-{n_candle_output_max}){sep_file}step{step}{sep_file}sc{size_coherence}'
     if len(indicators_to_add) > 0:
         id +=  sep_file + sep_file.join(indicators_to_add)
+    if len(cols_to_drop) > 0:
+        id += sep_file + 'drop(' + sep_file.join(cols_to_drop) + ')'
+        
+    print(f'{id=}')
         
     # Prepare datas set
     print('Prepare datas set')
-    dfs_dict = dfsDict('./datas/raw', sep=';', n_cols=9, 
+    dfs_dict = dfsDict(datas_path / 'raw', sep=';', n_cols=9, cols_to_drop=cols_to_drop,
                        dtype={'<DATE>':str, '<TIME>':str, '<OPEN>':'float', '<HIGH>':'float', '<LOW>':'float', '<CLOSE>':'float', '<TICKVOL>':'int', '<VOL>':'int', '<SPREAD>':'int'})
     addIndicatorsToDataSets(dfs_dict, indicators_to_add = indicators_to_add) 
     
@@ -259,7 +265,7 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
     
     # Scale and prepare datas
     print('Scaler and Shuffle datas set')
-    scaler_path = Path(f'./datas/scaler/{id}/{split_str}')
+    scaler_path = datas_path / f'scaler/{id}/{split_str}'
     scaler_path.mkdir(parents=True, exist_ok=True)
     inputs_train, inputs_val, inputs_test, outputs_train, outputs_val, outputs_test, inputs_mask_train, inputs_mask_val, inputs_mask_test, outputs_mask_train, outputs_mask_val, outputs_mask_test = scale(split_dict, cols_to_group_for_scale, columns_idx, path=scaler_path)
     
@@ -270,7 +276,7 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
     # Save datas
     print('Save datas')
     datas_dict = {'inputs_train':inputs_train, 'inputs_val':inputs_val, 'inputs_test':inputs_test, 'outputs_train':outputs_train, 'outputs_val':outputs_val, 'outputs_test':outputs_test, 'inputs_mask_train':inputs_mask_train, 'inputs_mask_val':inputs_mask_val, 'inputs_mask_test':inputs_mask_test, 'outputs_mask_train':outputs_mask_train, 'outputs_mask_val':outputs_mask_val, 'outputs_mask_test':outputs_mask_test}
-    save_path = Path(f'./datas/split/{id}/{split_str}')
+    save_path = datas_path / f'split/{id}/{split_str}'
     save_path.mkdir(parents=True, exist_ok=True)
     resum = ''
     for key, values in tqdm(datas_dict.items(), total=len(datas_dict)):
