@@ -15,44 +15,6 @@ import joblib
 from py_libraries.ml.model import TransformerForecaster
 from py_libraries.ml.optimizer.schedule import Noam
 
-# @tf.keras.utils.register_keras_serializable()
-# class DirectionalAccuracy(tf.keras.metrics.Metric):
-#     def __init__(self, name='directional_accuracy', **kwargs):
-#         super(DirectionalAccuracy, self).__init__(name=name, **kwargs)
-#         self.total = self.add_weight(name='total', initializer='zeros', dtype=tf.float32)
-#         self.correct = self.add_weight(name='correct', initializer='zeros', dtype=tf.float32)
-    
-#     def update_state(self, y_true, y_pred, sample_weight=None):
-#         # Extract the close price (assuming 4th feature: index 3)
-#         y_true_close = tf.cast(y_true[..., 3], tf.float32)
-#         y_pred_close = tf.cast(y_pred[..., 3], tf.float32)
-#         # Calculate differences between consecutive time steps along axis=1 (time axis)
-#         y_true_diff = y_true_close[:, 1:] - y_true_close[:, :-1]
-#         y_pred_diff = y_pred_close[:, 1:] - y_pred_close[:, :-1]
-#         # Compute the sign (direction) of these differences
-#         y_true_sign = tf.math.sign(y_true_diff)
-#         y_pred_sign = tf.math.sign(y_pred_diff)
-#         # Compare directional predictions: correct if both signs are equal
-#         correct = tf.cast(tf.equal(y_true_sign, y_pred_sign), tf.float32)
-#         # Update the counts
-#         if sample_weight is not None:
-#             # Ensure sample_weight is cast to correct type and adjust shape: drop first timestep.
-#             sample_weight = tf.cast(sample_weight, correct.dtype)
-#             sample_weight = sample_weight[:, 1:]
-#             correct *= sample_weight
-#             self.total.assign_add(tf.reduce_sum(sample_weight))
-#         else:
-#             self.total.assign_add(tf.cast(tf.size(correct), tf.float32))
-            
-#         self.correct.assign_add(tf.reduce_sum(correct))
-    
-#     def result(self):
-#         return tf.math.divide_no_nan(self.correct, self.total)
-    
-#     def reset_states(self):
-#         self.correct.assign(0.0)
-#         self.total.assign(0.0)
-
 @tf.keras.utils.register_keras_serializable()
 class DirectionalAccuracy(tf.keras.metrics.Metric):
     def __init__(self, name='candle_direction_accuracy', **kwargs):
@@ -202,48 +164,46 @@ class CustomCandleLoss(tf.keras.losses.Loss):
             "penalty_body_weight": self.penalty_body_weight
         })
         return config
-
-
-if __name__ == '__main__':
-    save_folder_path = Path(r'./saved_model')
-    split_folder_path = Path(r'E:\datas\gtw\split')
-    split_datas_str = '(40-40)_(1-1)_stepNone_scTrue_drop(date_time_tickvol_vol_spread)' #'(30-30)_(5-5)_stepNone_scTrue_rsi_macd_bollinger'
-    split_str = '935_05_015' # '7_15_15'
-    model_file_name = 'transformer.keras'
+    
+def model(save_folder_path, split_folder_path, # paths
+          split_datas_str, split_str, model_file_name, # datas
+          num_layers      = 4,    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
+          d_model         = 128,  # Latent space size (BERT de taille "base" utilise 768, et BERT "large" utilise 1024.)
+          num_heads       = 8,    # Number of attention heads (d_model = 768 est num_heads = 12)
+          dff             = 512,  # Feed-forward network inner dimension. The larger the dimension of dff, the more complex nonlinear transformations the model can learn. (2048 et 4096)
+          dropout_rate    = 0.1,
+          batch_size      = 32,
+          epochs          = 50,
+          warmup_rate     = 0.1,
+          es_patience_rate= 0.1
+        ):
+    save_folder_path, split_folder_path = Path(save_folder_path), Path(split_folder_path)
     
     split_path = split_folder_path / split_datas_str / split_str
     save_path  = save_folder_path  / split_datas_str / split_str
     
+    N = 1000
     
     # Load datas
-    inputs_train    = joblib.load(split_path / 'inputs_train.pkl' , mmap_mode='r')
-    inputs_val      = joblib.load(split_path / 'inputs_val.pkl'   , mmap_mode='r')
-    inputs_test     = joblib.load(split_path / 'inputs_test.pkl'  , mmap_mode='r')
-    outputs_train   = joblib.load(split_path / 'outputs_train.pkl', mmap_mode='r')
-    outputs_val     = joblib.load(split_path / 'outputs_val.pkl'  , mmap_mode='r')
-    outputs_test    = joblib.load(split_path / 'outputs_test.pkl' , mmap_mode='r')
+    inputs_train    = joblib.load(split_path / 'inputs_train.pkl' , mmap_mode='r')[:N]
+    inputs_val      = joblib.load(split_path / 'inputs_val.pkl'   , mmap_mode='r')[:N]
+    inputs_test     = joblib.load(split_path / 'inputs_test.pkl'  , mmap_mode='r')[:N]
+    outputs_train   = joblib.load(split_path / 'outputs_train.pkl', mmap_mode='r')[:N]
+    outputs_val     = joblib.load(split_path / 'outputs_val.pkl'  , mmap_mode='r')[:N]
+    outputs_test    = joblib.load(split_path / 'outputs_test.pkl' , mmap_mode='r')[:N]
     
     # Load mask
-    inputs_mask_train    = joblib.load(split_path / 'inputs_mask_train.pkl' , mmap_mode='r')
-    inputs_mask_val      = joblib.load(split_path / 'inputs_mask_val.pkl'   , mmap_mode='r')
-    inputs_mask_test     = joblib.load(split_path / 'inputs_mask_test.pkl'  , mmap_mode='r')
-    outputs_mask_train   = joblib.load(split_path / 'outputs_mask_train.pkl', mmap_mode='r')
-    outputs_mask_val     = joblib.load(split_path / 'outputs_mask_val.pkl'  , mmap_mode='r')
-    outputs_mask_test    = joblib.load(split_path / 'outputs_mask_test.pkl' , mmap_mode='r')
+    inputs_mask_train    = joblib.load(split_path / 'inputs_mask_train.pkl' , mmap_mode='r')[:N]
+    inputs_mask_val      = joblib.load(split_path / 'inputs_mask_val.pkl'   , mmap_mode='r')[:N]
+    inputs_mask_test     = joblib.load(split_path / 'inputs_mask_test.pkl'  , mmap_mode='r')[:N]
+    outputs_mask_train   = joblib.load(split_path / 'outputs_mask_train.pkl', mmap_mode='r')[:N]
+    outputs_mask_val     = joblib.load(split_path / 'outputs_mask_val.pkl'  , mmap_mode='r')[:N]
+    outputs_mask_test    = joblib.load(split_path / 'outputs_mask_test.pkl' , mmap_mode='r')[:N]
 
     # ----------------------------
     # Hyperparameters
     # ----------------------------
-    num_layers      = 1 #4    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
-    d_model         = 1 #128  # Latent space size (BERT de taille "base" utilise 768, et BERT "large" utilise 1024.)
-    num_heads       = 1 #8    # Number of attention heads (d_model = 768 est num_heads = 12)
-    dff             = 1 #512  # Feed-forward network inner dimension. The larger the dimension of dff, the more complex nonlinear transformations the model can learn. (2048 et 4096)
-    dropout_rate    = 0.1
-    batch_size      = 64
-    epochs          = 2 #200
-    warmup_rate     = 0.1
-    es_patience_rate= 0.1
-    es_patience     = int(epochs * es_patience_rate)
+    es_patience     = max(10, int(epochs * es_patience_rate))
     num_steps       = int(len(inputs_train) / batch_size)
     total_steps     = epochs * num_steps
     warmup_steps    = int(total_steps * warmup_rate)
@@ -260,6 +220,7 @@ if __name__ == '__main__':
     [input_seq_len_min, input_seq_len_max, target_seq_len_min, target_seq_len_max] = [int(x) for x in match.groups()]
     
     # Display infos
+    print(f'{id_=}')
     print(f'{num_features=}')
     print(f'{inputs_train.shape=}')
     print(f'{inputs_val.shape=}')
@@ -353,7 +314,7 @@ if __name__ == '__main__':
         x={'encoder_input':inputs_test, 'mask':{'encoder': inputs_mask_test, 'decoder': outputs_mask_test }},
         y=outputs_test,
         batch_size=batch_size,
-        verbose=1
+        verbose=2
     )
     
     print('Decoder output')
@@ -366,4 +327,36 @@ if __name__ == '__main__':
     print('True:')
     print(outputs_test[0])
     
+if __name__ == '__main__':
+    tf.keras.backend.clear_session()
+    # for split_datas_str in  [
+    #                             '(40-40)_(1-1)_step=1_sc=True_drop(date_time_tickvol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_drop(date_time_tickvol_vol)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_drop(date_time_tickvol_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_drop(date_time_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_bollinger_drop(date_time_tickvol_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_rsi_drop(date_time_tickvol_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_macd_drop(date_time_tickvol_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_macd_bollinger_drop(date_time_tickvol_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_rsi_bollinger_drop(date_time_tickvol_vol_spread)',
+    #                             '(40-40)_(1-1)_step=1_sc=True_rsi_macd_drop(date_time_tickvol_vol_spread)'
+    #                             '(40-40)_(1-1)_step=1_sc=True_rsi_macd_bollinger_drop(date_time_tickvol_vol_spread)',
+    #                         ]:
     
+    model(
+        save_folder_path = r'E:\csp\saved_model',
+        split_folder_path = r'E:\csp\split',
+        
+        split_datas_str = '(40-40)_(1-1)_step=1_sc=True_drop(date_time_tickvol_vol_spread)',
+        split_str = '935_05_015',
+        model_file_name = 'transformer.keras',
+        num_layers      = 1, #4    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
+        d_model         = 1, #128  # Latent space size (BERT de taille "base" utilise 768, et BERT "large" utilise 1024.)
+        num_heads       = 1, #8    # Number of attention heads (d_model = 768 est num_heads = 12)
+        dff             = 1, #512  # Feed-forward network inner dimension. The larger the dimension of dff, the more complex nonlinear transformations the model can learn. (2048 et 4096)
+        dropout_rate    = 0.1,
+        batch_size      = 64,
+        epochs          = 2, #200
+        warmup_rate     = 0.1,
+        es_patience_rate= 0.1,
+    )

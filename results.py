@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import joblib
 from pathlib import Path
 import pandas as pd
+from matplotlib.patches import Patch
 
 from py_libraries import visualize
 from py_libraries.number import formated
@@ -158,17 +159,29 @@ def plotCandles(i, inputs, outputs, predictions, x_offset=0, alpha=1.0, save_dir
         x_start = max(x_offset) + 1
 
     # Plot real forecast candles with high opacity
-    visualize.candles(outputs, x_offset=x_start, alpha=0.5, ax=ax, fig=fig, show=False)
+    visualize.candles(outputs, x_offset=x_start, open_legend='True_Buy', close_legend='True_Sell', alpha=0.5, ax=ax, fig=fig, show=False, legend_ax=True)
     # Overlay the predicted forecast candles with lower opacity
-    visualize.candles(predictions, x_offset=x_start, open_color='blue', close_color='orange', alpha=0.5, ax=ax, fig=fig, 
+    visualize.candles(predictions, x_offset=x_start, open_color='blue', close_color='orange', open_legend='Pred_Buy', close_legend='Pred_Sell',alpha=0.5, ax=ax, fig=fig, 
                      title=f'True and pred candlesticks', xlabel='Time', ylabel='Price', 
                      show=False, path=save_path)
     
+    # legend_elements = [
+    #     Patch(facecolor='green', edgecolor='green', label='True Buy Candle'),
+    #     Patch(facecolor='red', edgecolor='red', label='True Sell Candle'),
+    #     Patch(facecolor='blue', edgecolor='blue', label='Predicted Buy Candle'),
+    #     Patch(facecolor='orange', edgecolor='orange', label='Predicted Sell Candle'),
+    # ]
+
+    
+    # fig.legend(handles=legend_elements, loc='upper left')
+    # ax.legend()
+    # fig.legend()
+    
 def main():
     # Load the saved model from the specified folder
-    models_path = Path(r'./saved_model')
-    datas_path = Path(r'./datas/split')
-    save_path = Path(r'./plot')
+    models_path = Path(r'E:\csp\saved_model')
+    datas_path = Path(r'E:\csp\split')
+    save_path = Path(r'E:\csp\plot')
     
     indentation = ' ' * 4
     models_paths = list(models_path.rglob('*.keras'))
@@ -211,7 +224,7 @@ def main():
         model_save_path = save_path / datas_folder.name / split_folder.name / model_folder.name
         os.makedirs(model_save_path, exist_ok=True)
         for i in range(len(inputs_test)):
-            print(f'{indentation}Plotting example {i}/{len(inputs_test)}...', ' ' * 30, end='\r')
+            print(f'{indentation}Plotting example {i+1}/{len(inputs_test)}...', ' ' * 30, end='\r')
             plotCandles(f'{i}_a', inputs_test[i][inputs_mask_test[i], :4], outputs_test[i][outputs_mask_test[i], :4], np.array(predictions_auto_reg[i])[outputs_mask_test[i], :4], save_dir=str(model_save_path))
             plotCandles(f'{i}_d', inputs_test[i][inputs_mask_test[i], :4], outputs_test[i][outputs_mask_test[i], :4], np.array(predictions_decoder[i])[outputs_mask_test[i], :4], save_dir=str(model_save_path))
         print()

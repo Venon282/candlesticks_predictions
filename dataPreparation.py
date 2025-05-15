@@ -1,7 +1,7 @@
 import time
 import pandas as pd
 from pathlib import Path
-
+from itertools import combinations
 import numpy as np
 import joblib
 
@@ -55,7 +55,7 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
     datas_dict = dfsDtToDatas(dfs_dict, n_candle_input_min, n_candle_input_max, 
                                                        n_candle_output_min, n_candle_output_max,
                                                        size_coherence=size_coherence, step=step,
-                                                       max_workers=4)
+                                                       max_workers=4, seed=seed)
     
     split_dict = splitDataSet(datas_dict, split_rates, seed=seed)
     
@@ -64,13 +64,9 @@ def main(n_candle_input_min = 10, n_candle_input_max = 60,
 
 if __name__ == '__main__':
     start_time = time.time()
-    for cols_to_drop in [
-                            ['date', 'time', 'tickvol', 'vol', 'spread'],
-                            ['date', 'time', 'tickvol', 'vol'],
-                            ['date', 'time', 'tickvol', 'spread'],
-                            ['date', 'time',  'vol', 'spread'],
-                        ]:
-        
+    indicators = ['rsi', 'macd', 'bollinger']
+    combined_indicators = list(combinations(indicators, 2)) + list(combinations(indicators, 3))
+    for indicators_to_add in combined_indicators:
         main(
                 n_candle_input_min = 40, 
                 n_candle_input_max = 40, 
@@ -79,8 +75,8 @@ if __name__ == '__main__':
                 step=1, 
                 size_coherence=True,  
                 split_rates=[0.935, 0.05, 0.015],
-                indicators_to_add=[], # 'rsi', 'macd', 'bollinger'
-                cols_to_drop=cols_to_drop,
+                indicators_to_add=indicators_to_add,
+                cols_to_drop=['date', 'time', 'tickvol', 'vol', 'spread'],
                 sep_file = '_', 
                 datas_path=r'E:\csp',
                 seed=42

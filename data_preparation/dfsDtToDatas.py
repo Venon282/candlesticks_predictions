@@ -72,9 +72,10 @@ def transformDfsDictToDatasDict(dfs_dict, n_candle_input_min, n_candle_input_max
 def dfsDtToDatas(dfs_dict, n_candle_input_min, n_candle_input_max, 
                            n_candle_output_min, n_candle_output_max,
                            size_coherence=True, step=None, 
-                           max_workers=None):
+                           max_workers=None, seed=42):
     
     print('\nTransform datas to sequences')
+    random.seed(seed)
     datas_dict = transformDfsDictToDatasDict(dfs_dict, n_candle_input_min, n_candle_input_max, 
                                                        n_candle_output_min, n_candle_output_max,
                                                        size_coherence=size_coherence, step=step,
