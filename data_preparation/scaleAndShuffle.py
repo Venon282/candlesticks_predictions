@@ -6,27 +6,31 @@ from tqdm import tqdm
 import joblib
 
 # internal
-from py_libraries.ml.preprocessing import StandardGlobalScaler
+import py_libraries.ml.preprocessing as scalers
 
 def computeGroups(values, rows, path, cols_to_group_for_scale, market, columns_idx, fake_candle):
-    for cols in cols_to_group_for_scale:
-        scaler_path = path / (market + '_' + '_'.join(cols) + '.pkl')
-        inputs_train_array = np.array(values['inputs']['train'])       # Shape: [N, T, D]
-        outputs_train_array = np.array(values['outputs']['train'])     # Shape: [N, T, D]
-        inputs_mask = np.array(values['inputs_mask']['train'])         # Shape: [N, T]
-        outputs_mask = np.array(values['outputs_mask']['train'])       # Shape: [N, T]
-        cols_idx = [columns_idx[col] for col in cols]
-        is_price_group = 'open' in cols
-        
-        
-        scaler = computeFit(scaler_path, inputs_train_array, outputs_train_array, inputs_mask, outputs_mask, cols_idx)
-        values, rows = computeTransformation(values, rows, scaler, fake_candle, cols_idx, is_price_group)
+    for scaler_str, cols_to_group in cols_to_group_for_scale.items():
+        for cols in cols_to_group:
+            cols = [col for col in cols if col in columns_idx] #assure the col is well present
+            if len(cols) == 0: # If none of the cols is present, pass to next
+                continue
+            scaler_path = path / (market + '_' + scaler_str + '_' + '_'.join(cols) + '.pkl')
+            inputs_train_array = np.array(values['inputs']['train'])       # Shape: [N, T, D]
+            outputs_train_array = np.array(values['outputs']['train'])     # Shape: [N, T, D]
+            inputs_mask = np.array(values['inputs_mask']['train'])         # Shape: [N, T]
+            outputs_mask = np.array(values['outputs_mask']['train'])       # Shape: [N, T]
+            cols_idx = [columns_idx[col] for col in cols]
+            is_price_group = 'open' in cols
+            
+            
+            scaler = computeFit(scaler_str, scaler_path, inputs_train_array, outputs_train_array, inputs_mask, outputs_mask, cols_idx)
+            values, rows = computeTransformation(values, rows, scaler, fake_candle, cols_idx, is_price_group)
             
     return values, rows
 
-def computeFit(scaler_path, inputs, outputs, inputs_mask, outputs_mask, cols_idx):
+def computeFit(scaler_str, scaler_path, inputs, outputs, inputs_mask, outputs_mask, cols_idx):
     if not scaler_path.is_file():
-        scaler = StandardGlobalScaler()
+        scaler = getattr(scalers, scaler_str)()
         scaler.fit([
             inputs[:, :, cols_idx][inputs_mask.astype(bool)],  # First 4 cols without the mask
             outputs[:, :, cols_idx][outputs_mask.astype(bool)]
