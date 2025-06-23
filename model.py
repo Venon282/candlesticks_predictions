@@ -175,7 +175,12 @@ def model(save_folder_path, split_folder_path, # paths
           batch_size      = 32,
           epochs          = 50,
           warmup_rate     = 0.1,
-          es_patience_rate= 0.1
+          es_patience_rate= 0.1,
+          penalty_direction_weight  = 1.0, 
+          penalty_open_weight       = 1.0, 
+          penalty_close_weight      = 1.0,
+          penalty_size_weight       = 1.0, 
+          penalty_body_weight       = 1.0
         ):
     save_folder_path, split_folder_path = Path(save_folder_path), Path(split_folder_path)
     
@@ -210,7 +215,8 @@ def model(save_folder_path, split_folder_path, # paths
     num_features    = outputs_train.shape[-1]
     
     # Implement id model
-    id_ = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_e{epochs}_esp{es_patience}_wu{warmup_steps}'.replace('.', ',')
+    id_ = f'nl{num_layers}_dm{d_model}_nh{num_heads}_dff{dff}_dr{dropout_rate}_bs{batch_size}_e{epochs}_esp{es_patience}_wu{warmup_steps}_pdw{penalty_direction_weight}_pow{penalty_open_weight}_pcw{penalty_close_weight}_psw{penalty_size_weight}_pbw{penalty_body_weight}'.replace('.', ',')
+    
     save_path = save_path / id_
     save_path.mkdir(parents=True, exist_ok=True)
 
@@ -241,6 +247,11 @@ def model(save_folder_path, split_folder_path, # paths
     print(f'{total_steps=}') 
     print(f'{warmup_steps=}')
     print(f'{num_features=}')
+    print(f'{penalty_direction_weight=}')  
+    print(f'{penalty_open_weight=}')       
+    print(f'{penalty_close_weight=}')      
+    print(f'{penalty_size_weight=}')       
+    print(f'{penalty_body_weight=}')       
 
     # ----------------------------
     # Instantiate & Compile the Model
@@ -254,12 +265,17 @@ def model(save_folder_path, split_folder_path, # paths
     # Use the custom Noam learning rate schedule
     learning_rate = Noam(d_model, warmup_steps=warmup_steps)
     optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
-    transformer.compile(optimizer=optimizer, loss=CustomCandleLoss(penalty_direction_weight=2.0),
+    transformer.compile(optimizer=optimizer, loss=CustomCandleLoss(
+                                                    penalty_direction_weight  = penalty_direction_weight, 
+                                                    penalty_open_weight       = penalty_open_weight, 
+                                                    penalty_close_weight      = penalty_close_weight,
+                                                    penalty_size_weight       = penalty_size_weight, 
+                                                    penalty_body_weight       = penalty_body_weight
+                                            ),
                         metrics=[
                             'mse',
                             tf.keras.metrics.MeanAbsoluteError(name='mae'),
-                            tf.keras.metrics.RootMeanSquaredError(name='rmse'),
-                            DirectionalAccuracy(name='directional_accuracy')
+                            tf.keras.metrics.RootMeanSquaredError(name='rmse')
                         ],
                         weighted_metrics=[DirectionalAccuracy(name='directional_accuracy')])
 
@@ -359,4 +375,9 @@ if __name__ == '__main__':
         epochs          = 2, #200
         warmup_rate     = 0.1,
         es_patience_rate= 0.1,
+        penalty_direction_weight  = 3.0, 
+        penalty_open_weight       = 0.5, 
+        penalty_close_weight      = 0.5,
+        penalty_size_weight       = 0.2, 
+        penalty_body_weight       = 0.5
     )

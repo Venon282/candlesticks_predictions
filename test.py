@@ -2,6 +2,8 @@ import tensorflow as tf
 import numpy as np
 from itertools import combinations
 from matplotlib import pyplot as plt
+from pathlib import Path
+import joblib
 
 from py_libraries.ml.preprocessing.StandardGlobalScaler import StandardGlobalScaler
 
@@ -94,4 +96,27 @@ def plotNoam():
     plt.savefig(str(file_path / plot_name))
     plt.close()
     
-plotNoam()
+def flat():
+    columns_groups_1 = {
+        'StandardGlobalScaler':[['open', 'high', 'low', 'close'], 
+                                ['bollinger_sma', 'bollinger_upper', 'bollinger_lower'],
+                                ['macd_hist'],
+                                ['macd_line', 'macd_signal']],
+        'MinMaxGlobalScaler':[['rsi']]
+    }
+    
+    from py_libraries.object import flatten
+    print(flatten(columns_groups_1))
+
+def joinTest():
+    print('_'.join(['test']))
+    print('_'.join(['test', 'test']))
+    
+# joinTest()
+
+p  = Path(r'E:\csp\split')
+print(list(map(lambda x: x.stem,list(p.iterdir()))))
+
+n_files = [len(list(f.iterdir())) for s in p.iterdir() for f in s.iterdir()]
+print(n_files)
+print(min(n_files), max(n_files))

@@ -79,8 +79,10 @@ if __name__ == '__main__':
                               ['rsi']]
     }
     cols_groups = [['sgs', columns_groups_1], ['mmgs', columns_groups_2]]
+    c = ['tickvol', 'vol', 'spread']
+    cols_to_drops = list(combinations(c, 2)) + list(combinations(c, 3))
     
-    for indicators_to_add, [id, cols_group] in product(combined_indicators, cols_groups):
+    for  cols_to_drop , [id, cols_group] in product(cols_to_drops, cols_groups): # indicators_to_add,product(combined_indicators, cols_groups):
         main(
                 n_candle_input_min = 40, 
                 n_candle_input_max = 40, 
@@ -89,8 +91,8 @@ if __name__ == '__main__':
                 step=1, 
                 size_coherence=True,  
                 split_rates=[0.935, 0.05, 0.015],
-                indicators_to_add=indicators_to_add,
-                cols_to_drop=['date', 'time', 'tickvol', 'vol', 'spread'],
+                indicators_to_add=[], #indicators_to_add,
+                cols_to_drop=['date', 'time'] + list(cols_to_drop), #['date', 'time', 'tickvol', 'vol', 'spread'],
                 cols_group=cols_group,
                 sep_file = '_', 
                 datas_path=r'E:\csp',
