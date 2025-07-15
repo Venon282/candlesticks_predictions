@@ -75,7 +75,7 @@ class CustomCandleLoss(tf.keras.losses.Loss):
           name: Name for the loss function.
           **kwargs: Additional keyword arguments.
         """
-        super(CustomCandleLoss, self).__init__(name=name, **kwargs)
+        super(CustomCandleLoss, self).__init__(name=name, reduction=tf.keras.losses.Reduction.NONE, **kwargs) 
         self.penalty_direction_weight = penalty_direction_weight
         self.penalty_open_weight = penalty_open_weight
         self.penalty_close_weight = penalty_close_weight
@@ -111,10 +111,14 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         penalty_order_elem = penalty_high_elem + penalty_low_elem  # shape: (batch, T)
 
         # --- Directional penalty (categorical) ---
-        true_direction = tf.sign(y_true[..., 3] - y_true[..., 0])  # (batch, T)
-        pred_direction = tf.sign(y_pred[..., 3] - y_pred[..., 0])      # (batch, T)
-        direction_mismatch = tf.cast(tf.not_equal(true_direction, pred_direction), tf.float32)  # (batch, T)
-        penalty_direction_elem = self.penalty_direction_weight * direction_mismatch  # (batch, T)
+        # true_direction = tf.sign(y_true[..., 3] - y_true[..., 0])  # (batch, T)
+        # pred_direction = tf.sign(y_pred[..., 3] - y_pred[..., 0])      # (batch, T)
+        # direction_mismatch = tf.cast(tf.not_equal(true_direction, pred_direction), tf.float32)  # (batch, T)
+        # penalty_direction_elem = self.penalty_direction_weight * direction_mismatch  # (batch, T)
+        true_direction = tf.sign(y_true[...,3] - y_true[...,0])
+        pred_margin    = y_pred[...,3] - y_pred[...,0]
+        direction_loss  = tf.nn.relu(- true_direction * pred_margin) # 0 if true and pred same direction else margin value
+        penalty_direction_elem = self.penalty_direction_weight * direction_loss
 
         # --- Open and close error penalties (always applied) ---
         error_open_elem = tf.square(y_true[..., 0] - y_pred[..., 0])   # (batch, T)
@@ -146,11 +150,11 @@ class CustomCandleLoss(tf.keras.losses.Loss):
         # --- If sample_weight (mask) is provided, compute the masked average loss ---
         if sample_weight is not None:
             sample_weight = tf.cast(sample_weight, loss_per_timestep.dtype)  # shape: (batch, T)
-            total_loss = tf.reduce_sum(loss_per_timestep * sample_weight)
-            normalizer = tf.reduce_sum(sample_weight) + 1e-8
+            total_loss = tf.reduce_sum(loss_per_timestep * sample_weight, axis=1)         # (batch,)
+            normalizer = tf.reduce_sum(sample_weight, axis=1) + 1e-8             # (batch,)
             loss = total_loss / normalizer
         else:
-            loss = tf.reduce_mean(loss_per_timestep)
+            loss = tf.reduce_mean(loss_per_timestep, axis=1)              # (batch,)
 
         return loss
 
@@ -259,8 +263,8 @@ def model(save_folder_path, split_folder_path, # paths
     transformer = TransformerForecaster(num_layers, d_model, num_heads, dff,
                                         input_seq_len_max, target_seq_len_max, num_features,
                                         dropout_rate)
-    transformer.summary()
-    transformer.print_layers()
+    # transformer.summary()
+    # transformer.print_layers()
 
     # Use the custom Noam learning rate schedule
     learning_rate = Noam(d_model, warmup_steps=warmup_steps)
@@ -358,12 +362,13 @@ if __name__ == '__main__':
     #                             '(40-40)_(1-1)_step=1_sc=True_rsi_macd_drop(date_time_tickvol_vol_spread)'
     #                             '(40-40)_(1-1)_step=1_sc=True_rsi_macd_bollinger_drop(date_time_tickvol_vol_spread)',
     #                         ]:
+    #print(f'{epochs=} {split_datas_str=}')
     
     model(
         save_folder_path = r'E:\csp\saved_model',
         split_folder_path = r'E:\csp\split',
         
-        split_datas_str = '(40-40)_(1-1)_step=1_sc=True_drop(date_time_tickvol_vol_spread)',
+        split_datas_str = '(40-40)_(1-1)_step=1_sc=True_drop(date_time_tickvol_vol_spread)_sgs',
         split_str = '935_05_015',
         model_file_name = 'transformer.keras',
         num_layers      = 1, #4    # Number of layers in the encoder and decoder (BERT ou GPT-2 utilisent généralement de 12 à 24 couches)
