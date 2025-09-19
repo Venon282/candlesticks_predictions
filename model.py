@@ -283,9 +283,9 @@ def model(save_folder_path, split_folder_path, # paths
                             'mse',
                             tf.keras.metrics.MeanAbsoluteError(name='mae'),
                             tf.keras.metrics.RootMeanSquaredError(name='rmse'),
-                            DirectionalAccuracy(name='directional_accuracy_normal')
-                        ],
-                        weighted_metrics=[DirectionalAccuracy(name='directional_accuracy')])
+                            DirectionalAccuracy(name='da')
+                        ]
+    )
 
     decoder_input_train = outputs_train
     decoder_input_val = outputs_val
