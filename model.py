@@ -238,6 +238,9 @@ def model(save_folder_path, split_folder_path, # paths
     print(f'{outputs_train.shape=}')
     print(f'{outputs_val.shape=}')
     print(f'{outputs_test.shape=}')
+    print(f'{outputs_mask_train.shape=}')
+    print(f'{outputs_mask_val.shape=}')
+    print(f'{outputs_mask_test.shape=}')
     print(f'{num_layers=}')  
     print(f'{d_model=}')     
     print(f'{num_heads=}')   
@@ -279,7 +282,8 @@ def model(save_folder_path, split_folder_path, # paths
                         metrics=[
                             'mse',
                             tf.keras.metrics.MeanAbsoluteError(name='mae'),
-                            tf.keras.metrics.RootMeanSquaredError(name='rmse')
+                            tf.keras.metrics.RootMeanSquaredError(name='rmse'),
+                            DirectionalAccuracy(name='directional_accuracy_normal')
                         ],
                         weighted_metrics=[DirectionalAccuracy(name='directional_accuracy')])
 
